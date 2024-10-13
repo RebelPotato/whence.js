@@ -32,11 +32,33 @@ class ADT {
   }
 }
 
+function once(fn) {
+  let result = undefined;
+  let called = false;
+  return function (...args) {
+    if (!called) {
+      result = fn(...args);
+      called = true;
+    }
+    return result;
+  };
+}
+function put(env, x, v) {
+  const newEnv = { ...env };
+  newEnv[x] = v;
+  return newEnv;
+}
+function freshen(env, n) {
+  while (Object.hasOwn(env, n)) n = n + "'";
+  return n;
+}
+
 // a language has: eval, norm, show
 // this may not be the best way to represent a language:
 // it forfeits tagless final's composability?
 
-const Main = (() => {
+// higher order embedding
+const Higher = (() => {
   const Lang = {
     // lambda, application, constant
     l: (fn) => (S) => (mustHave(S, "l"), S.l((x) => fn((_) => x)(S))), // tricky
@@ -63,7 +85,7 @@ const Main = (() => {
   };
   Lang.eval = function (term) {
     return term(this.EvalS);
-  }
+  };
 
   // Translate term to string
 
@@ -86,6 +108,10 @@ const Main = (() => {
 
   Lang.show = function (term) {
     return term(this.ShowS)(0);
+  };
+
+  Lang.simp = function (term) {
+    return NamedToHigher(Named.simp(HigherToNamed(term)));
   }
 
   return Lang;
@@ -103,7 +129,6 @@ const Full = (() => {
     v: (n) => (S) => (mustHave(S, "v"), S.v(n)),
     c: (v) => (S) => (mustHave(S, "c"), S.c(v)),
   };
-  const Value = new ADT({ C: 1, A: 1, T: 1 });
 
   Lang.EvalS = {
     l: (t) => (env) => (x) => t([x, ...env]),
@@ -112,12 +137,13 @@ const Full = (() => {
     c: (v) => (_) => v,
   };
   Lang.eval = function (term) {
-    return term(this.EvalS);
-  }
+    return term(this.EvalS)([]);
+  };
 
+  const Value = new ADT({ C: 1, A: 1, T: 1 });
   function readBack(value) {
     return value.match({
-      C: (n) => Lang.c(n),
+      C: (v) => Lang.c(v),
       T: (e) => e,
       A: (f) => Lang.l(readBack(f(Value.T(Lang.v(0))))),
     });
@@ -167,9 +193,7 @@ const Full = (() => {
   Lang.norm = function (term) {
     const value = term(this.NormS)([]);
     return readBack(value);
-  }
-
-  // strong normalization?
+  };
 
   // term a == level -> a
   Lang.ShowS = {
@@ -183,10 +207,109 @@ const Full = (() => {
   };
   Lang.show = function (term) {
     return term(this.ShowS)(0);
-  }
+  };
 
   return Lang;
 })();
+
+const Named = (() => {
+  const Lang = {
+    l: (n, t) => (S) => (mustHave(S, "l"), S.l(n, t(S))),
+    a: (t1, t2) => (S) => (mustHave(S, "a"), S.a(t1(S), t2(S))),
+    v: (n) => (S) => (mustHave(S, "v"), S.v(n)),
+    c: (v) => (S) => (mustHave(S, "c"), S.c(v)),
+  };
+
+  function put(env, x, v) {
+    const newEnv = { ...env };
+    newEnv[x] = v;
+    return newEnv;
+  }
+  function freshen(env, n) {
+    while (Object.hasOwn(env, n)) n = n + "'";
+    return n;
+  }
+
+  Lang.EvalS = {
+    l: (n, t) => (env) => (x) => t(put(env, n, x)),
+    a: (t1, t2) => (env) => t1(env)(t2(env)),
+    v: (n) => (env) => env[n],
+    c: (v) => (_) => v,
+  };
+  Lang.eval = function (term) {
+    return term(this.EvalS)({});
+  };
+
+  // normalize a term strongly. reaches under lambdas!
+  const Value = new ADT({ Const: 1, Clo: 3, NVar: 1, NApp: 2 });
+  function apply(vf, x) {
+    return vf.match({
+      Clo: (env, n, body) => body(put(env, n, x)),
+      NVar: () => Value.NApp(vf, x),
+      NApp: () => Value.NApp(vf, x),
+      Const: (t) => {
+        throw Error(`Cannot apply constant ${t} to a term`);
+      },
+    });
+  }
+  function readBack(used, value) {
+    return value.match({
+      Const: (v) => Lang.c(v),
+      NVar: (n) => Lang.v(n),
+      NApp: (f, x) => Lang.a(readBack(used, f), readBack(used, x)),
+      Clo: (_env, n, _body) => {
+        const n0 = freshen(used, n);
+        return Lang.l(n0, readBack(used, apply(value, Value.NVar(n0))));
+      }, // should apply a value at the bottom of the stack
+    });
+  }
+  Lang.SimpS = {
+    l: (n, t) => (env) => Value.Clo(env, n, t),
+    a: (t1, t2) => (env) => apply(t1(env), t2(env)),
+    v: (n) => (env) => env[n],
+    c: (v) => (_) => Value.Const(v),
+  };
+  Lang.simp = function (term) {
+    const value = term(this.SimpS)([]);
+    return readBack({}, value);
+  };
+
+  // term a == a
+  Lang.ShowS = {
+    l: (n, t) => `(λ${n}. ${t})`,
+    a: (t1, t2) => `(${t1} ${t2})`,
+    v: (n) => `${n}`,
+    c: (v) => `${v}`,
+  };
+  Lang.show = function (term) {
+    return term(this.ShowS);
+  };
+
+  return Lang;
+})();
+
+const HigherToNamedS = {
+  // (Int -> Named a) -> Int -> Named a
+  l: (fn) => (level) =>
+    Named.l(`x${level}`, fn((_) => Named.v(`x${level}`))(level + 1)),
+  a: (e1, e2) => (level) => Named.a(e1(level), e2(level)),
+  c: (v) => (_) => Named.c(v),
+};
+
+function HigherToNamed(term) {
+  return term(HigherToNamedS)(0);
+}
+
+const NamedToHigherS = {
+  l: (n, t) => (env) => Higher.l((x) => t(put(env, n, x))),
+  a: (t1, t2) => (env) => Higher.a(t1(env), t2(env)),
+  v: (n) => (env) => env[n],
+  c: (v) => (_) => Higher.c(v),
+};
+
+function NamedToHigher(term) {
+  return term(NamedToHigherS)({});
+}
 
 // Into ADT
 

@@ -1,38 +1,46 @@
-const { l, a, c, v } = Full;
+// const { l, a, c, v } = Named;
 
-const t = l(a(l(v(0)), v(0))); // \x. (\y. y) x
-console.log(Full.show(t));
-// under strong normalization, this should produce \x. x
-console.log(Full.show(Full.norm(t)));
+// const t = l("x", a(l("y", v("y")), v("x"))); // \x. (\y. y) x
+// console.log(Named.show(t));
+// // under strong normalization, this should produce \x. x
+// console.log(Named.show(Named.simp(t)));
 
-const k = l(l(v(1)));
-const i = l(v(0));
+// const k = l("x", l("y", v("x")));
+// const i = l("x", v("x"));
+// console.log(Named.show(a(k, i)));
+// console.log(Named.show(Named.simp(a(k, i)))); // should be \x. \y. y
+// const ki = Named.simp(a(k, i));
+// const not = l("f", a(a(v("f"), ki), k));
+// console.log(Named.show(a(not, ki)));
+// console.log(Named.show(Named.simp(a(not, ki)))); // should be \x. \y. x
+
+// function toChurch(n) {
+//   const f = v("f");
+//   const x = v("x");
+//   if(n === 0) return l("f", l("x", x));
+//   return l("f", l("x", a(a(toChurch(n - 1), f), a(f, x))));
+// }
+// function addChurch(m, n) {
+//   const f = v("f");
+//   const x = v("x");
+//   return l("f", l("x", a(a(m, f), a(a(n, f), x))));
+// }
+// const two = toChurch(2);
+// const three = toChurch(3);
+// const fiveAdd = addChurch(two, three);
+// const five = toChurch(5);
+// console.log(Named.show(fiveAdd));
+// console.log(Named.show(Named.simp(fiveAdd)));
+// console.log(Named.show(five));
+// console.log(Named.show(Named.simp(five)));
+
+const { l, a, c } = Higher;
+const k = l((x) => l((y) => x));
+const i = l((x) => x);
 const ki = a(k, i);
-const not = l(a(a(v(0), ki), k));
-console.log(Full.show(ki));
-console.log(Full.show(Full.norm(ki)));
-console.log(Full.show(Full.norm(a(not, ki))));
-
-function toChurch(n) {
-  if(n === 0) return l(l(v(0)));
-  const f = v(1);
-  const x = v(0);
-  return l(l(a(a(toChurch(n - 1), f), a(f, x))));
-}
-function addChurch(m, n) {
-  const f = v(1);
-  const x = v(0);
-  return l(l(a(a(m, f), a(a(n, f), x))));
-}
-const two = toChurch(2);
-const three = toChurch(3);
-const fiveAdd = addChurch(two, three);
-const five = toChurch(5);
-console.log(Full.show(fiveAdd));
-console.log(Full.show(Full.norm(fiveAdd)));
-console.log(Full.show(five));
-
-// const { l, a, c } = Maker;
+const kiN = HigherToNamed(ki);
+console.log(Higher.show(NamedToHigher(kiN)));
+console.log(Higher.show(Higher.simp(ki)));
 // function toChurch(n) {
 //   return n === 0
 //     ? l((f) => l((x) => x))
@@ -44,17 +52,6 @@ console.log(Full.show(five));
 // logshow(normalize(twice));
 
 // const tests = [
-//   () => {
-//     const { l, a, c } = Makers1;
-//     const k = l((x) => l((y) => x));
-//     const i = l((x) => x);
-//     const ki = a(k, i);
-//     const a2 = (x, y, z) => a(a(x, y), z);
-//     return [a2(k, c(1), c(2)), a2(ki, c(1), c(2))].flatMap((t) => [
-//       ev1(t),
-//       show1(t),
-//     ]);
-//   },
 // ];
 
 // const displayEl = document.getElementById("display");
