@@ -1,10 +1,17 @@
 const { l, a, c, v } = Full;
 
+const t = l(a(l(v(0)), v(0))); // \x. (\y. y) x
+console.log(Full.show(t));
+// under strong normalization, this should produce \x. x
+console.log(Full.show(Full.norm(t)));
+
 const k = l(l(v(1)));
 const i = l(v(0));
 const ki = a(k, i);
+const not = l(a(a(v(0), ki), k));
 console.log(Full.show(ki));
 console.log(Full.show(Full.norm(ki)));
+console.log(Full.show(Full.norm(a(not, ki))));
 
 function toChurch(n) {
   if(n === 0) return l(l(v(0)));

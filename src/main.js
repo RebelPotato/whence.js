@@ -158,7 +158,7 @@ const Full = (() => {
       const otherwise = () => Value.C(v);
       if (env.length == 0) return otherwise();
       return env[0].match({
-        T: () => Lang.c(v), // readback
+        T: () => Value.T(Lang.c(v)), // readback
         A: otherwise,
         C: otherwise,
       });
