@@ -1,55 +1,36 @@
-// const { l, a, c, v } = Named;
+function dbg(...args) {
+  console.log(...args);
+  return args[args.length - 1];
+}
 
-// const t = l("x", a(l("y", v("y")), v("x"))); // \x. (\y. y) x
-// console.log(Named.show(t));
-// // under strong normalization, this should produce \x. x
-// console.log(Named.show(Named.simp(t)));
+const { fn, a, c } = Core.Self;
+const cshow = term => show(Core, term);
+const csimp = term => simp(Core, term);
 
-// const k = l("x", l("y", v("x")));
-// const i = l("x", v("x"));
-// console.log(Named.show(a(k, i)));
-// console.log(Named.show(Named.simp(a(k, i)))); // should be \x. \y. y
-// const ki = Named.simp(a(k, i));
-// const not = l("f", a(a(v("f"), ki), k));
-// console.log(Named.show(a(not, ki)));
-// console.log(Named.show(Named.simp(a(not, ki)))); // should be \x. \y. x
-
-// function toChurch(n) {
-//   const f = v("f");
-//   const x = v("x");
-//   if(n === 0) return l("f", l("x", x));
-//   return l("f", l("x", a(a(toChurch(n - 1), f), a(f, x))));
-// }
-// function addChurch(m, n) {
-//   const f = v("f");
-//   const x = v("x");
-//   return l("f", l("x", a(a(m, f), a(a(n, f), x))));
-// }
-// const two = toChurch(2);
-// const three = toChurch(3);
-// const fiveAdd = addChurch(two, three);
-// const five = toChurch(5);
-// console.log(Named.show(fiveAdd));
-// console.log(Named.show(Named.simp(fiveAdd)));
-// console.log(Named.show(five));
-// console.log(Named.show(Named.simp(five)));
-
-const { l, a, c } = Higher;
-const k = l((x) => l((y) => x));
-const i = l((x) => x);
+const k = fn((x) => fn((_) => x));
+const i = fn((x) => x);
 const ki = a(k, i);
-const kiN = HigherToNamed(ki);
-console.log(Higher.show(NamedToHigher(kiN)));
-console.log(Higher.show(Higher.simp(ki)));
-// function toChurch(n) {
-//   return n === 0
-//     ? l((f) => l((x) => x))
-//     : l((f) => l((x) => a(a(toChurch(n - 1), f), a(f, x))));
-// }
-// const twice = toChurch(2);
-// const thrice = toChurch(3);
-// logshow(twice);
-// logshow(normalize(twice));
+dbg(show(Core, ki));
+dbg(show(Core, simp(Core, ki)));
+
+const zero = fn((_) => fn((x) => x));
+function inc(n) {
+  return fn((f) => fn((x) => a(a(n, f), a(f, x))));
+}
+function toChurch(n) {
+  return n === 0
+    ? zero
+    : inc(toChurch(n - 1));
+}
+function add(m, n) {
+  return fn((f) => fn((x) => a(a(m, f), a(a(n, f), x))));
+}
+const twice = toChurch(2);
+const thrice = toChurch(3);
+dbg(show(Core, twice));
+dbg(show(Core, thrice));
+dbg(show(Core, add(twice, thrice)));
+dbg(cshow(csimp(add(twice, thrice))));
 
 // const tests = [
 // ];

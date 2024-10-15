@@ -1,3 +1,5 @@
 # whence.js (in progress)
 
-A miniature theorem prover written in js, based on dependently typed lambda calculus.
+A personal playground for programming languages.
+
+I hope to eventually implement a dependently typed language in this.
