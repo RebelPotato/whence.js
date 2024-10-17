@@ -25,10 +25,21 @@ class UnifyEnv {
     return z;
   }
   set(x, y) {
-    this.env.set(this.walk(x), this.walk(y));
+    if (y.has(x))
+      throw Error(
+        `unify: ${y.show()} contains circular reference to ${x.show()}`
+      );
+    this.env.set(x, y);
     return this;
   }
+  notEmpty(fn, elseFn) {
+    if (this.env.size > 0) return fn(this);
+    return elseFn();
+  }
 }
+
+// hex string representation of a BigInt with 256 bits
+const toHex = (x) => x.toString(16).padStart(64, "0");
 
 // sdbm hash function with 256 bits
 const sdbm = (str, initial = BigInt(0)) => {
@@ -49,7 +60,7 @@ const sdbm = (str, initial = BigInt(0)) => {
 const combine = (...hashes) => {
   let result = BigInt(0);
   for (const hash of hashes) {
-    result = sdbm(btoa(hash), result);
+    result = sdbm(toHex(hash), result);
   }
   return result;
 };
@@ -79,14 +90,19 @@ const Kernel = (() => {
       return other === Bool;
     },
     show: (env = new ShowEnv()) => "Bool",
-    unify: (t, env) => {
-      const t0 = env.walk(t);
-      return t0.match({
-        Tvar: () => env.set(t0, Bool),
+    has: (other) => Bool.eq(other),
+    unify: (t, env) =>
+      t.match({
+        Tvar: () => {
+          const t0 = env.walk(t);
+          return t0.match({
+            Tvar: () => env.set(t0, Bool),
+            _: () => Bool.unify(t0, env),
+          });
+        },
         Bool: () => env,
-        _: () => fail(`Bool: type mismatch, ${t0.show()} is not Bool`),
-      });
-    },
+        _: () => fail(`Bool: type mismatch, ${t.show()} is not Bool`),
+      }),
     reType: (_) => Bool,
     hash: (env = new ShowEnv()) => sdbm("Bool"),
   };
@@ -100,20 +116,29 @@ const Kernel = (() => {
           _: () => false,
         }),
       show: (env = new ShowEnv()) => `(${l.show(env)} -> ${r.show(env)})`,
-      unify: (t, env) => {
-        const t0 = env.walk(t);
-        return t0.match({
-          Tvar: () => env.set(t0, obj),
+      has: (x) => l.has(x) || r.has(x),
+      unify: (t, env) =>
+        t.match({
+          Tvar: () => {
+            const t0 = env.walk(t);
+            return t0.match({
+              Tvar: () => env.set(t0, obj),
+              _: () => obj.unify(t0, env),
+            });
+          },
           Arr: (l2, r2) => {
             env = l.unify(l2, env);
             env = r.unify(r2, env);
             return env;
           },
           _: () =>
-            fail(`(->): type mismatch: ${t0.show()} is not ${obj.show()}`),
-        });
-      },
-      reType: (env) => Arr(l.reType(env), r.reType(env)),
+            fail(`(->): type mismatch: ${t.show()} is not ${obj.show()}`),
+        }),
+      reType: (env) =>
+        env.notEmpty(
+          () => Arr(l.reType(env), r.reType(env)),
+          () => obj
+        ),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("Arr"), l.hash(env), r.hash(env)),
     };
@@ -126,11 +151,16 @@ const Kernel = (() => {
       match: matchOr("Tvar", [name], () => obj),
       eq: (other) => other === obj,
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
-      unify: (t, env) => {
-        const t0 = env.walk(t);
-        if (t0.eq(t)) return env; // beware infinite loops
-        return env.set(obj, t0);
-      },
+      has: (x) => obj.eq(x),
+      unify: (t, env) =>
+        t.match({
+          Tvar: () => {
+            const t0 = env.walk(t);
+            if (t0.eq(t)) return env; // beware infinite loops
+            return env.set(obj, t0);
+          },
+          _: () => t.unify(obj, env),
+        }),
       reType: (env) => env.walk(obj),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("Tvar"), sdbm(`${name}${env.get(obj)}`)),
@@ -156,11 +186,15 @@ const Kernel = (() => {
       eq: (other) => other === obj,
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
       has: (x) => obj.eq(x),
-      reType: (env) => {
-        const newType = type.reType(env);
-        if (newType.eq(type)) return obj;
-        return vari(type.reType(env), name);
-      },
+      reType: (env) =>
+        env.notEmpty(
+          () => {
+            const newType = type.reType(env);
+            if (newType.eq(type)) return obj;
+            return vari(type.reType(env), name);
+          },
+          () => obj
+        ),
       replace: (x, y) => {
         if (obj.eq(x)) {
           if (!obj.type.eq(y.type)) obj.reType(y.type);
@@ -196,7 +230,10 @@ const Kernel = (() => {
       },
       has: (x) => body(vari(ptype)).has(x),
       reType: (env) =>
-        fn(ptype.reType(env), (x) => body(x.reType(env)).reType(env)),
+        env.notEmpty(
+          () => fn(ptype.reType(env), (x) => body(x).reType(env)),
+          () => obj
+        ),
       replace: (x, y) =>
         fn(ptype, (z) => {
           const tmp = vari(ptype);
@@ -215,7 +252,10 @@ const Kernel = (() => {
     const opType = op.type;
     const argType = arg.type;
     const type = opType.match({
-      Arr: (l, r) => r.reType(l.unify(argType, new UnifyEnv())),
+      Arr: (l, r) => {
+        const env = l.unify(argType, new UnifyEnv());
+        return r.reType(env);
+      },
       _: () => {
         throw Error(
           `app: type mismatch, tried to apply non-function ${op.show()} :: ${opType.show()} to an argument`
@@ -233,7 +273,11 @@ const Kernel = (() => {
         }),
       show: (env = new ShowEnv()) => `(${op.show(env)} ${arg.show(env)})`,
       has: (x) => op.has(x) || arg.has(x),
-      reType: (env) => app(op.reType(env), arg.reType(env)),
+      reType: (env) =>
+        env.notEmpty(
+          () => app(op.reType(env), arg.reType(env)),
+          () => obj
+        ),
       replace: (x, y) => app(op.replace(x, y), arg.replace(x, y)),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("app"), op.hash(env), arg.hash(env)),
@@ -259,7 +303,11 @@ const Kernel = (() => {
         }),
       show: (env = new ShowEnv()) => `(${lhs.show(env)} = ${rhs.show(env)})`,
       has: (x) => lhs.has(x) || rhs.has(x),
-      reType: (env) => eq(lhs.reType(env), rhs.reType(env)),
+      reType: (env) =>
+        env.notEmpty(
+          () => eq(lhs.reType(env), rhs.reType(env)),
+          () => obj
+        ),
       replace: (x, y) => eq(lhs.replace(x, y), rhs.replace(x, y)),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("="), lhs.hash(env), rhs.hash(env)),
@@ -397,37 +445,14 @@ const Kernel = (() => {
   // Creating new constants, terms and operators
   // ------------------------------------------------------------
 
-  function mkConst(name, term, attrs = {}) {
-    const obj = {
-      match: matchOr(name, [], () => obj),
-      type: term.type,
-      eq: (other) => other === obj,
-      has: (other) => obj.eq(other),
-      reType: (env) => {
-        const newTerm = term.reType(env);
-        if (newTerm.eq(term)) return obj;
-        const [newObj, _] = mkConst(name, newTerm, attrs);
-        return newObj;
-      },
-      replace: (x, y) => (obj.eq(x) ? y : obj),
-      show: () => name,
-      hash: () => sdbm(name),
-    };
-    for (const k of Object.keys(attrs)) {
-      obj[k] = attrs[k];
-    }
-    const DEF = Sequent([], eq(obj, term));
-    return [Object.freeze(obj), DEF];
-  }
-
-  function mkOp(name, arity, term, attrGen = () => ({})) {
+  function mkOp(name, arity, termFn, attrGen = () => ({})) {
     function gen(...args) {
       if (args.length != arity) {
         throw Error(
           `${name}: arity mismatch, ${name} expects ${arity} arguments`
         );
       }
-      let rhs = term;
+      let rhs = termFn();
       for (const arg of args) {
         rhs = app(rhs, arg);
       }
@@ -441,10 +466,19 @@ const Kernel = (() => {
             _: () => false,
           }),
         has: (other) => obj.eq(other) || args.some((x) => x.has(other)),
-        reType: (env) => {
-          const [gen, _] = mkOp(name, arity, term.reType(env), attrGen);
-          return gen(...args.map((x) => x.reType(env)));
-        },
+        reType: (env) =>
+          env.notEmpty(
+            () => {
+              const [gen, _] = mkOp(
+                name,
+                arity,
+                () => termFn().reType(env),
+                attrGen
+              );
+              return gen(...args.map((x) => x.reType(env)));
+            },
+            () => obj
+          ),
         replace: (x, y) => (obj.eq(x) ? y : obj),
         show: (env = new ShowEnv()) =>
           `(${name} ${args.map((x) => x.show(env)).join(" ")})`,
@@ -463,7 +497,7 @@ const Kernel = (() => {
         );
       }
       const lhs = gen(...args);
-      let rhs = term;
+      let rhs = termFn();
       for (const arg of args) {
         rhs = app(rhs, arg);
       }
@@ -472,11 +506,18 @@ const Kernel = (() => {
     return [gen, DEF];
   }
 
+  function mkConst(name, termFn, attrs = {}) {
+    return mkOp(name, 0, termFn, () => ({
+      show: (env = new ShowEnv()) => name,
+      ...attrs,
+    }));
+  }
+
   function mkBinOp(name, term, attrGen = () => ({})) {
     return mkOp(name, 2, term, (t1, t2) => ({
-      ...attrGen(t1, t2),
       show: (env = new ShowEnv()) =>
         `(${t1.show(env)} ${name} ${t2.show(env)})`,
+      ...attrGen(t1, t2),
     }));
   }
 
