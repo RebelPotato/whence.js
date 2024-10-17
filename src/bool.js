@@ -17,7 +17,7 @@ const BoolThms = (() => {
     TRANS,
     de,
   } = Kernel;
-  const { SYM, NORM_APP } = EqualThms;
+  const { SYM, NORM } = EqualThms;
 
   // truth
   const [T, T_DEF] = mkConst(
@@ -28,20 +28,26 @@ const BoolThms = (() => {
     )
   );
 
-  const A = Tvar("A");
-  const [forall, FORALL_DEF] = mkOp(
-    "∀",
-    1,
-    fn(Arr(A, Bool), (p) =>
-      eq(
-        p,
-        fn(A, (_) => T)
+  const freshT = (name, fn) => fn(Tvar(name));
+
+  const [forallX, FORALL_DEF] = freshT("A", (A) =>
+    mkOp(
+      "∀",
+      1,
+      fn(Arr(A, Bool), (p) =>
+        eq(
+          p,
+          fn(A, (_) => T)
+        )
       )
     )
   );
-  const every = (body) => forall(fn(Bool, body));
+  const forall = (body) => forallX(fn(Bool, body));
 
-  const [F, F_DEF] = mkConst("F", forall(fn(Bool, (x) => x)));
+  const [F, F_DEF] = mkConst(
+    "F",
+    forall((x) => x)
+  );
 
   const [and, AND_DEF] = mkBinOp(
     "∧",
@@ -69,34 +75,36 @@ const BoolThms = (() => {
   const [or, OR_DEF] = mkBinOp(
     "∨",
     fn(Bool, (p) =>
-      fn(Bool, (q) => every((r) => imp(imp(p, r), imp(imp(q, r), r))))
+      fn(Bool, (q) => forall((r) => imp(imp(p, r), imp(imp(q, r), r))))
     )
   );
 
-  const [exist, EXIST_DEF] = mkOp(
-    "∃",
-    1,
-    fn(Arr(A, Bool), (p) =>
-      every((q) =>
-        imp(
-          every((x) => imp(app(p, x), q)), // if q is the term we want
-          q // then q is true
+  const [existX, EXIST_DEF] = freshT("A", (A) =>
+    mkOp(
+      "∃",
+      1,
+      fn(Arr(A, Bool), (p) =>
+        forall((q) =>
+          imp(
+            forall((x) => imp(app(p, x), q)), // if q is the term we want
+            q // then q is true
+          )
         )
       )
     )
   );
-  const some = (body) => exist(fn(Bool, body));
+  const exist = (body) => existX(fn(Bool, body));
 
   // |- T
   const TRUTH = EMP(SYM(T_DEF), REFL(fn(Bool, (x) => x)));
-  // A |- (l == T) / A |- l
+  // A |- (l = T) / A |- l
   const EQT_ELIM = (thm) => EMP(SYM(thm), TRUTH);
-  // A |- l / A |- (l == T)
+  // A |- l / A |- (l = T)
   const EQT_INTRO = (thm) => {
     const l = thm.then;
     const a = vari(Bool);
-    const thm1 = DEDUCT(ASSUME(a), TRUTH); // a |- a == T
-    const pthm = DEDUCT(EQT_ELIM(ASSUME(thm1.then)), thm1); // |- a == (a == T)
+    const thm1 = DEDUCT(ASSUME(a), TRUTH); // a |- a = T
+    const pthm = DEDUCT(EQT_ELIM(ASSUME(thm1.then)), thm1); // |- a = (a = T)
     return EMP(pthm.replace(a, l), thm);
   };
 
@@ -104,7 +112,7 @@ const BoolThms = (() => {
     return (...args) => {
       const defThm = def(...args);
       const [_, rhs] = de("eq", defThm.then);
-      return TRANS(defThm, NORM_APP(rhs));
+      return TRANS(defThm, NORM(rhs));
     };
   }
 
@@ -131,9 +139,6 @@ const BoolThms = (() => {
     OR_DEF,
     exist,
     EXIST_DEF,
-    // shorthand
-    every,
-    some,
     // theorems
     TRUTH,
     EQT_ELIM,

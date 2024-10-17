@@ -30,9 +30,39 @@ class UnifyEnv {
   }
 }
 
+// sdbm hash function with 256 bits
+const sdbm = (str, initial = BigInt(0)) => {
+  const arr = str.split("");
+  let hashCode = initial;
+  for (let i = 0; i < arr.length; i++) {
+    hashCode =
+      BigInt(arr[i].charCodeAt(0)) +
+      (hashCode << 6n) +
+      (hashCode << 16n) -
+      hashCode;
+    // get last 256 bits
+    hashCode = hashCode & 0xffffffffffffffffn;
+  }
+  return hashCode;
+};
+
+const combine = (...hashes) => {
+  let result = BigInt(0);
+  for (const hash of hashes) {
+    result = sdbm(btoa(hash), result);
+  }
+  return result;
+};
 
 function fail(msg) {
   throw Error(msg);
+}
+
+function matchOr(name, args, self) {
+  return (cases) => {
+    if (Object.hasOwn(cases, name)) return cases[name](...args);
+    return cases._(self());
+  };
 }
 
 const Kernel = (() => {
@@ -54,18 +84,16 @@ const Kernel = (() => {
       return t0.match({
         Tvar: () => env.set(t0, Bool),
         Bool: () => env,
-        _: () => fail(`Type mismatch: ${t0.show()} is not Bool`),
+        _: () => fail(`Bool: type mismatch, ${t0.show()} is not Bool`),
       });
     },
-    replace: (_) => Bool,
+    reType: (_) => Bool,
+    hash: (env = new ShowEnv()) => sdbm("Bool"),
   };
 
   function Arr(l, r) {
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "Arr")) return cases.Arr(l, r);
-        return cases._(obj);
-      },
+      match: matchOr("Arr", [l, r], () => obj),
       eq: (other) =>
         other.match({
           Arr: (l2, r2) => l.eq(l2) && r.eq(r2),
@@ -81,35 +109,38 @@ const Kernel = (() => {
             env = r.unify(r2, env);
             return env;
           },
-          _: () => fail(`Type mismatch: ${t0.show()} is not ${obj.show()}`),
+          _: () =>
+            fail(`(->): type mismatch: ${t0.show()} is not ${obj.show()}`),
         });
       },
-      replace: (env) => Arr(l.replace(env), r.replace(env)),
+      reType: (env) => Arr(l.reType(env), r.reType(env)),
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("Arr"), l.hash(env), r.hash(env)),
     };
     return Object.freeze(obj);
   }
 
   function Tvar(name = "T") {
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "Tvar")) return cases.Tvar(name);
-        return cases._(obj);
-      },
+      id: crypto.randomUUID(),
+      match: matchOr("Tvar", [name], () => obj),
       eq: (other) => other === obj,
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
       unify: (t, env) => {
         const t0 = env.walk(t);
-        if (t0.eq(t)) return env;
+        if (t0.eq(t)) return env; // beware infinite loops
         return env.set(obj, t0);
       },
-      replace: (env) => env.walk(obj),
+      reType: (env) => env.walk(obj),
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("Tvar"), sdbm(`${name}${env.get(obj)}`)),
     };
     return Object.freeze(obj);
   }
 
   // ------------------------------------------------------------
   // Terms
-  // match, type, eq, show, has, replace
+  // match, type, eq, show, has, reType, replace, hash
   // ------------------------------------------------------------
 
   function eqOrThrow(t1, t2, errorFn) {
@@ -120,26 +151,25 @@ const Kernel = (() => {
 
   function vari(type, name = "x") {
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "vari")) return cases.vari(type, name);
-        return cases._(obj);
-      },
+      match: matchOr("vari", [type, name], () => obj),
       type,
       eq: (other) => other === obj,
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
       has: (x) => obj.eq(x),
+      reType: (env) => {
+        const newType = type.reType(env);
+        if (newType.eq(type)) return obj;
+        return vari(type.reType(env), name);
+      },
       replace: (x, y) => {
         if (obj.eq(x)) {
-          eqOrThrow(
-            obj.type,
-            y.type,
-            () =>
-              `Type mismatch: cannot replace ${obj.show()} :: ${obj.type.show()} with ${y.show()} :: ${y.type.show()}`
-          );
+          if (!obj.type.eq(y.type)) obj.reType(y.type);
           return y;
         }
         return obj;
       },
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("vari"), type.hash(env), sdbm(`${name}${env.get(obj)}`)),
     };
     return Object.freeze(obj);
   }
@@ -149,10 +179,7 @@ const Kernel = (() => {
     const ret = body(vari(ptype)).type;
     const type = Arr(ptype, ret);
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "fn")) return cases.fn(ptype, body);
-        return cases._(obj);
-      },
+      match: matchOr("fn", [ptype, body], () => obj),
       type,
       eq: (other) =>
         other.match({
@@ -165,15 +192,21 @@ const Kernel = (() => {
       show: (env = new ShowEnv()) => {
         const x = vari(ptype);
         env.get(x);
-        const ret = `(λ${x.show(env)}. ${body(x).show(env)})`;
-        return ret;
+        return `(λ${x.show(env)}. ${body(x).show(env)})`;
       },
       has: (x) => body(vari(ptype)).has(x),
+      reType: (env) =>
+        fn(ptype.reType(env), (x) => body(x.reType(env)).reType(env)),
       replace: (x, y) =>
         fn(ptype, (z) => {
           const tmp = vari(ptype);
           return body(tmp).replace(x, y).replace(tmp, z); // tmp is introduced in case z = x
         }),
+      hash: (env = new ShowEnv()) => {
+        const x = vari(ptype);
+        env.get(x);
+        return combine(sdbm("fn"), x.hash(env), body(x).hash(env));
+      },
     };
     return Object.freeze(obj);
   }
@@ -182,19 +215,16 @@ const Kernel = (() => {
     const opType = op.type;
     const argType = arg.type;
     const type = opType.match({
-      Arr: (l, r) => r.replace(l.unify(argType, new UnifyEnv())),
+      Arr: (l, r) => r.reType(l.unify(argType, new UnifyEnv())),
       _: () => {
         throw Error(
-          `Type mismatch: tried to apply non-function ${op.show()} :: ${opType.show()} to an argument`
+          `app: type mismatch, tried to apply non-function ${op.show()} :: ${opType.show()} to an argument`
         );
       },
     });
 
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "app")) return cases.app(op, arg);
-        return cases._(obj);
-      },
+      match: matchOr("app", [op, arg], () => obj),
       type,
       eq: (other) =>
         other.match({
@@ -203,7 +233,10 @@ const Kernel = (() => {
         }),
       show: (env = new ShowEnv()) => `(${op.show(env)} ${arg.show(env)})`,
       has: (x) => op.has(x) || arg.has(x),
+      reType: (env) => app(op.reType(env), arg.reType(env)),
       replace: (x, y) => app(op.replace(x, y), arg.replace(x, y)),
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("app"), op.hash(env), arg.hash(env)),
     };
     return Object.freeze(obj);
   }
@@ -211,18 +244,13 @@ const Kernel = (() => {
   function eq(lhs, rhs) {
     const type1 = lhs.type;
     const type2 = rhs.type;
-    eqOrThrow(
-      type1,
-      type2,
-      () =>
-        `Type mismatch: cannot construct ${lhs.show()} :: ${type1.show()} = ${rhs.show()} :: ${type2.show()}`
-    );
+    const env = type1.unify(type2, new UnifyEnv());
+    lhs = lhs.reType(env);
+    rhs = rhs.reType(env);
+
     const type = Bool;
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, "eq")) return cases.eq(lhs, rhs);
-        return cases._(obj);
-      },
+      match: matchOr("eq", [lhs, rhs], () => obj),
       type,
       eq: (other) =>
         other.match({
@@ -231,7 +259,10 @@ const Kernel = (() => {
         }),
       show: (env = new ShowEnv()) => `(${lhs.show(env)} = ${rhs.show(env)})`,
       has: (x) => lhs.has(x) || rhs.has(x),
+      reType: (env) => eq(lhs.reType(env), rhs.reType(env)),
       replace: (x, y) => eq(lhs.replace(x, y), rhs.replace(x, y)),
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("="), lhs.hash(env), rhs.hash(env)),
     };
     return Object.freeze(obj);
   }
@@ -247,23 +278,21 @@ const Kernel = (() => {
       eqOrThrow(
         t.type,
         Bool,
-        () => `Type mismatch: ${t.show()} :: ${t.type.show()} is not a boolean`
+        () =>
+          `⊢: type mismatch, ${t.show()} :: ${t.type.show()} is not a boolean`
       );
     }
     eqOrThrow(
       then.type,
       Bool,
       () =>
-        `Type mismatch: ${then.show()} :: ${then.type.show()} is not a boolean`
+        `⊢: type mismatch: ${then.show()} :: ${then.type.show()} is not a boolean`
     );
 
     const obj = {
       ifs,
       then,
-      match: (cases) => {
-        if (Object.hasOwn(cases, "Sequent")) return cases.Sequent(ifs, then);
-        return cases._(obj);
-      },
+      match: matchOr("Sequent", [ifs, then], () => obj),
       eq: (other) =>
         other.match({
           Sequent: (otherThen, otherIfs) =>
@@ -279,6 +308,8 @@ const Kernel = (() => {
           ifs.map((t) => t.replace(x, y)),
           then.replace(x, y)
         ),
+      hash: (env = new ShowEnv()) =>
+        combine(sdbm("⊢"), then.hash(env), ...ifs.map((t) => t.hash(env))),
     };
     return Object.freeze(obj);
   }
@@ -297,7 +328,7 @@ const Kernel = (() => {
       b0,
       b1,
       () =>
-        `Term mismatch: ${b0.show()} :: ${b0.type.show()} and ${b1.show()} :: ${b1.type.show()} are not equal`
+        `TRANS: term mismatch, ${b0.show()} :: ${b0.type.show()} and ${b1.show()} :: ${b1.type.show()} are not equal`
     );
 
     const then = eq(a, c);
@@ -317,12 +348,11 @@ const Kernel = (() => {
     for (const t of thm.ifs) {
       if (t.has(v))
         throw Error(
-          `Free variable: variiable ${v.show()} is free in condition ${t.show()}`
+          `ABS: free variable, variiable ${v.show()} is free in condition ${t.show()}`
         );
     }
 
     // replace all occurences of v in t with x
-
     const then = eq(
       fn(v.type, (x) => a.replace(v, x)),
       fn(v.type, (x) => b.replace(v, x))
@@ -347,7 +377,7 @@ const Kernel = (() => {
       p,
       p0,
       () =>
-        `Term mismatch: ${p.show()} :: ${p.type.show()} and ${p0.show()} :: ${p0.type.show()} are not equal`
+        `EMP: term mismatch, ${p.show()} :: ${p.type.show()} and ${p0.show()} :: ${p0.type.show()} are not equal`
     );
     return Sequent(merge(pThm.ifs, pqThm.ifs), q);
   }
@@ -369,15 +399,19 @@ const Kernel = (() => {
 
   function mkConst(name, term, attrs = {}) {
     const obj = {
-      match: (cases) => {
-        if (Object.hasOwn(cases, name)) return cases[name]();
-        return cases._(obj);
-      },
+      match: matchOr(name, [], () => obj),
       type: term.type,
       eq: (other) => other === obj,
       has: (other) => obj.eq(other),
+      reType: (env) => {
+        const newTerm = term.reType(env);
+        if (newTerm.eq(term)) return obj;
+        const [newObj, _] = mkConst(name, newTerm, attrs);
+        return newObj;
+      },
       replace: (x, y) => (obj.eq(x) ? y : obj),
       show: () => name,
+      hash: () => sdbm(name),
     };
     for (const k of Object.keys(attrs)) {
       obj[k] = attrs[k];
@@ -389,7 +423,9 @@ const Kernel = (() => {
   function mkOp(name, arity, term, attrGen = () => ({})) {
     function gen(...args) {
       if (args.length != arity) {
-        throw Error(`Arity mismatch: ${name} expects ${arity} arguments`);
+        throw Error(
+          `${name}: arity mismatch, ${name} expects ${arity} arguments`
+        );
       }
       let rhs = term;
       for (const arg of args) {
@@ -397,10 +433,7 @@ const Kernel = (() => {
       }
       const attrs = attrGen(...args);
       const obj = {
-        match: (cases) => {
-          if (Object.hasOwn(cases, name)) return cases[name](...args);
-          return cases._(obj);
-        },
+        match: matchOr(name, args, () => obj),
         type: rhs.type,
         eq: (other) =>
           other.match({
@@ -408,18 +441,26 @@ const Kernel = (() => {
             _: () => false,
           }),
         has: (other) => obj.eq(other) || args.some((x) => x.has(other)),
+        reType: (env) => {
+          const [gen, _] = mkOp(name, arity, term.reType(env), attrGen);
+          return gen(...args.map((x) => x.reType(env)));
+        },
         replace: (x, y) => (obj.eq(x) ? y : obj),
         show: (env = new ShowEnv()) =>
           `(${name} ${args.map((x) => x.show(env)).join(" ")})`,
+        hash: (env = new ShowEnv()) =>
+          combine(sdbm(name), ...args.map((x) => x.hash(env))),
       };
       for (const k of Object.keys(attrs)) {
         obj[k] = attrs[k];
       }
       return Object.freeze(obj);
     }
-    function APP(...args) {
+    function DEF(...args) {
       if (args.length != arity) {
-        throw Error(`Arity mismatch: ${name} expects ${arity} arguments`);
+        throw Error(
+          `${name}: arity mismatch: ${name} expects ${arity} arguments`
+        );
       }
       const lhs = gen(...args);
       let rhs = term;
@@ -428,7 +469,7 @@ const Kernel = (() => {
       }
       return Sequent([], eq(lhs, rhs));
     }
-    return [gen, APP];
+    return [gen, DEF];
   }
 
   function mkBinOp(name, term, attrGen = () => ({})) {
@@ -443,16 +484,33 @@ const Kernel = (() => {
   // Utils
   // ------------------------------------------------------------
 
-  // check if a list of terms contains a term
-  function contains(ifs, t) {
-    return ifs.some((u) => u.eq(t));
-  }
-
-  // merge two lists of terms
+  // merge two lists of terms, sorted according to hash
   function merge(ifs1, ifs2) {
-    const newIfs = [...ifs1];
-    for (const t of ifs2) {
-      if (!contains(newIfs, t)) newIfs.push(t);
+    const newIfs = [];
+    let i = 0;
+    let j = 0;
+    while (i < ifs1.length && j < ifs2.length) {
+      const h1 = ifs1[i].hash();
+      const h2 = ifs2[j].hash();
+      if (h1 < h2) {
+        newIfs.push(ifs1[i]);
+        i++;
+      } else if (h1 > h2) {
+        newIfs.push(ifs2[j]);
+        j++;
+      } else {
+        newIfs.push(ifs1[i]);
+        i++;
+        j++;
+      }
+    }
+    while (i < ifs1.length) {
+      newIfs.push(ifs1[i]);
+      i++;
+    }
+    while (j < ifs2.length) {
+      newIfs.push(ifs2[j]);
+      j++;
     }
     return newIfs;
   }
