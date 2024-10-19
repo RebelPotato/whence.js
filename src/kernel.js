@@ -141,6 +141,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     hollow: (_) => Maybe.Just((_) => Wat),
     show: () => "Wat",
     hash: () => sdbm("Wat"),
+    free: [],
   };
 
   const Type = {
@@ -150,6 +151,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     hollow: (_) => Maybe.Just((_) => Type),
     show: () => "Type",
     hash: () => sdbm("Type"),
+    free: [],
   };
   Wat.type = Type;
 
@@ -167,6 +169,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     hollow: (_v) => Maybe.Just((_) => Bool),
     show: () => "Bool",
     hash: () => sdbm("Bool"),
+    free: [],
   };
 
   // hollow turns a type into Maybe (Var -> Term), allowing swaping one variable for another
@@ -187,7 +190,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       fail(
         `Pi: type mismatch, ${ptype.show()} :: ${ptype.type.show()} should be a type`
       );
-    const Tmp = vari(ptype);
+    const Tmp = vari(ptype, "T");
     const ret = body(Tmp);
     const inputKind = ptype.type;
     const outputKind = ret.type;
@@ -204,38 +207,45 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       fail(
         `Pi: this kernel cannot build a function from type :: ${ptype.show()} to term :: ${ret.show()}`
       );
-    
-    const hasTmp = ret.hollow(Tmp).isNothing;
+      
+    return PiX(ptype, Tmp, ret, body);
+  }
 
-    // when inputKind = Type and outputKind = Type, this is just the arrow type
+  function PiX(ptype, Tmp, ret, body) {
+    const varUsed = ret.free.includes(Tmp);
+    if (!varUsed) return PiCheap(ptype, ret);
+
     const obj = {
+      cheap: false,
       match: matchOr("Pi", [ptype, body], () => obj),
       type: Type,
       eq: (other) =>
         other.match({
           Pi: (otherPtype, otherBody) => {
             if (!ptype.eq(otherPtype)) return false;
-            const T = vari(ptype);
+            const T = vari(ptype, "T");
             return body(T).eq(otherBody(T));
           },
           _: () => false,
         }),
       hollow: (v) => {
-        const T = vari(ptype);
-        return hollow2(ptype, body(T), (p, b) => Pi(p, (x) => b.hollow(T)(x)))(
-          v
-        );
+        const newP = ptype.hollow(v);
+        const newR = ret.hollow(v); // ret is body with x replaced by Tmp, now hollow out v
+        if (newP.isNothing && newR.isNothing) return Maybe.Nothing;
+        const pFn = newP.orElse(() => (_) => ptype);
+        // the body has x, so we need to use hollow to pass it
+        // I guess body(x).hollow(v)(v0) is faster than RFn(v0).hollow(Tmp)(v)
+        // because hollow needs to construct a whole lot of new closures
+        // so RFn should run slower than body
+        return Maybe.Just((v0) => Pi(pFn(v0), (x) => body(x).hollow(v)(v0)));
       },
       show: (env = new ShowEnv()) => {
-        if(hasTmp) {
-          const T = vari(ptype);
-          env.get(T);
-          return `(Π${T.show(env)} :: ${ptype.show(env)}. ${body(T).show(env)})`;
-        }
-        return `(${ptype.show(env)} -> ${ret.show(env)})`;
+        const T = vari(ptype, "T");
+        env.get(T);
+        return `(Π${T.show(env)} :: ${ptype.show(env)}. ${body(T).show(env)})`;
       },
       hash: (env = new ShowEnv()) => {
-        const T = vari(ptype);
+        const T = vari(ptype, "T");
         env.get(T);
         return combine(sdbm("Pi"), T.hash(env), body(T).hash(env));
       },
@@ -246,11 +256,52 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
           );
         return body(arg);
       },
+      free: merge(ptype.free, remove(ret.free, Tmp)),
     };
     return Object.freeze(obj);
   }
 
-  // an arrow is an alias for a pi type with no free variables inside.
+  // optimization: a Pi type with no free variables inside
+  function PiCheap(ptype, ret) {
+    const obj = {
+      cheap: true,
+      match: matchOr("Pi", [ptype, () => ret], () => obj),
+      type: Type,
+      eq: (other) =>
+        other.match({
+          Pi: (otherPtype, otherBody) => {
+            if (!other.cheap || !ptype.eq(otherPtype)) return false;
+            return ret.eq(otherBody());
+          },
+          _: () => false,
+        }),
+      hollow: (v) => {
+        const newP = ptype.hollow(v);
+        const newR = ret.hollow(v);
+        if (newP.isNothing && newR.isNothing) return Maybe.Nothing;
+        const pFn = newP.orElse(() => (_) => ptype);
+        const RFn = newR.orElse(() => (_) => ret);
+        return Maybe.Just((v0) => PiCheap(pFn(v0), RFn(v0))); // the body does not have x
+      },
+      show: (env = new ShowEnv()) => `(${ptype.show(env)} → ${ret.show(env)})`,
+      hash: (env = new ShowEnv()) => {
+        const T = vari(ptype, "T");
+        env.get(T);
+        return combine(sdbm("Pi"), T.hash(env), ret.hash(env));
+      },
+      app: (arg) => {
+        if (!ptype.eq(arg.type))
+          fail(
+            `Pi: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} to ${obj.show()}`
+          );
+        return ret;
+      },
+      free: merge(ptype.free, ret.free),
+    };
+    return Object.freeze(obj);
+  }
+
+  // an arrow is an alias for a pi type to another type. It is a PiCheap!
   function Arr(l, r) {
     return Pi(l, () => r);
   }
@@ -264,7 +315,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     if (!t1.eq(t2)) fail(errorFn());
   }
 
-  function vari(type, name = "x") {
+  function vari(type, name = "$") {
     const obj = {
       match: matchOr("vari", [type, name], () => obj),
       type,
@@ -272,14 +323,18 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
       hollow: (v) => (v === obj ? Maybe.Just((v0) => v0) : Maybe.Nothing),
       hash: (env = new ShowEnv()) =>
-        combine(sdbm("vari"), type.hash(env), sdbm(`${name}${env.get(obj)}`)),
+        combine(sdbm("vari"), type.hash(env), sdbm(`${env.get(obj)}`)),
     };
+    obj.free = merge([obj], type.free);
     return Object.freeze(obj);
   }
 
   // use a function as the body to avoid alpha conversions
   function fn(ptype, body) {
-    const type = Pi(ptype, (x) => body(x).type); // naive type inference?
+    const tmpX = vari(ptype, "x");
+    const ret = body(tmpX).type;
+    const type = PiX(ptype, tmpX, ret, ret.hollow(tmpX).orElse(() => ret)); // naive type inference?
+
     const obj = {
       match: matchOr("fn", [ptype, body], () => obj),
       type,
@@ -287,24 +342,25 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         other.match({
           fn: (otherType, otherBody) => {
             if (!ptype.eq(otherType)) return false;
-            const x = vari(ptype);
+            const x = vari(ptype, "x");
             return body(x).eq(otherBody(x));
           },
           _: () => false,
         }),
       show: (env = new ShowEnv()) => {
-        const x = vari(ptype);
+        const x = vari(ptype, "x");
         env.get(x);
         return `(λ${x.show(env)} :: ${ptype.show(env)}. ${body(x).show(env)})`;
       },
       hollow: (v) => {
-        const x = vari(ptype);
-        return hollow2(ptype, body(x), (p, b) =>
-          fn(p, (x0) => b.hollow(x)(x0))
-        )(v);
+        const newP = ptype.hollow(v);
+        const newR = ret.hollow(v); // ret is body with x replaced by tmpX, now hollow out v
+        if (newP.isNothing && newR.isNothing) return Maybe.Nothing;
+        const pFn = newP.orElse(() => (_) => ptype);
+        return Maybe.Just((v0) => fn(pFn(v0), (x) => body(x).hollow(v)(v0)));
       },
       hash: (env = new ShowEnv()) => {
-        const x = vari(ptype);
+        const x = vari(ptype, "x");
         env.get(x);
         return combine(sdbm("fn"), x.hash(env), body(x).hash(env));
       },
@@ -315,6 +371,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
           );
         return body(arg);
       },
+      free: merge(ptype.free, remove(ret.free, tmpX)),
     };
     return Object.freeze(obj);
   }
@@ -341,6 +398,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       hollow: hollow2(op, arg, app),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("app"), op.hash(env), arg.hash(env)),
+      free: merge(op.free, arg.free),
     };
     return Object.freeze(obj);
   }
@@ -369,6 +427,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       hollow: hollow2(lhs, rhs, eq),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("="), lhs.hash(env), rhs.hash(env)),
+      free: merge(lhs.free, rhs.free),
     };
     return Object.freeze(obj);
   }
@@ -416,6 +475,10 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         ),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("⊢"), then.hash(env), ...ifs.map((t) => t.hash(env))),
+      free: merge(
+        then.free,
+        ifs.reduce((acc, x) => merge(acc, x.free), [])
+      ),
     };
     return Object.freeze(obj);
   }
@@ -533,6 +596,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
           `(${name} ${args.map((x) => x.show(env)).join(" ")})`,
         hash: (env = new ShowEnv()) =>
           combine(sdbm(name), ...args.map((x) => x.hash(env))),
+        free: args.reduce((acc, x) => merge(acc, x.free), []),
       };
       for (const k of Object.keys(attrs)) {
         obj[k] = attrs[k];
@@ -573,33 +637,18 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
   // Utils
   // ------------------------------------------------------------
 
-  // merge two lists of terms, sorted according to hash
+  // merge two lists of terms, removing duplicates
   function merge(ifs1, ifs2) {
-    const newIfs = [];
-    let i = 0;
-    let j = 0;
-    while (i < ifs1.length && j < ifs2.length) {
-      const h1 = ifs1[i].hash();
-      const h2 = ifs2[j].hash();
-      if (h1 < h2) {
-        newIfs.push(ifs1[i]);
-        i++;
-      } else if (h1 > h2) {
-        newIfs.push(ifs2[j]);
-        j++;
-      } else {
-        newIfs.push(ifs1[i]);
-        i++;
-        j++;
+    const newIfs = [...ifs1];
+    const hashes = ifs1.map((x) => x.hash());
+    for (const t of ifs2) {
+      const h = t.hash();
+      if (!hashes.includes(h)) {
+        newIfs.push(t);
+        hashes.push(h);
+      } else if (!newIfs.some((x) => x.eq(t))) {
+        newIfs.push(t);
       }
-    }
-    while (i < ifs1.length) {
-      newIfs.push(ifs1[i]);
-      i++;
-    }
-    while (j < ifs2.length) {
-      newIfs.push(ifs2[j]);
-      j++;
     }
     return newIfs;
   }

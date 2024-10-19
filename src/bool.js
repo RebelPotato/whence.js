@@ -148,7 +148,6 @@ const BoolThms = (() => {
     const lem0 = AND_L(ASSUME(and(u, thm.then))); // u, t |- u
     const lem1 = AND(ASSUME(u), thm); // u, A |- u and t
     const lem2 = DEDUCT(lem1, lem0); // A |- u
-    console.log(lem2.show());
     return EMP(SYM(IMP_THM(u, thm.then)), lem2);
   }
 
