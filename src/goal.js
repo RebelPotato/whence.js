@@ -56,58 +56,6 @@ const Proof = (() => {
   };
 })();
 
-const Either = {
-  Left: (value) => ({
-    match: (cases) => cases.Left(value),
-    map: (_) => Either.Left(value),
-    app: (_) => Either.Left(value),
-    pipe: (_) => Either.Left(value),
-    orThrow: () => {
-      throw new Error(value);
-    },
-  }),
-  Right: (value) => ({
-    match: (cases) => cases.Right(value),
-    map: (fn) => Either.Right(fn(value)),
-    app: (x) => x.map(value),
-    pipe: (fn) => fn(value),
-    orThrow: () => value,
-  }),
-  collect(eithers) {
-    const acc = [];
-    for (const e of eithers) {
-      e.match({
-        Right: (x) => acc.push(x),
-        Left: () => {
-          return e;
-        },
-      });
-    }
-    return Maybe.Just(acc);
-  },
-};
-
-const Maybe = {
-  Just: (value) => ({
-    match: (cases) => cases.Just(value),
-    map: (fn) => Maybe.Just(fn(value)),
-    app: (x) => x.map(value),
-    pipe: (fn) => fn(value),
-    orElse: (_) => value,
-    orThrow: (_) => value,
-  }),
-  Nothing: {
-    match: (cases) => cases.Nothing(),
-    map: (_) => Maybe.Nothing,
-    app: (_) => Maybe.Nothing,
-    pipe: (_) => Maybe.Nothing,
-    orElse: (fn) => fn(),
-    orThrow: (msg = "Nothing") => {
-      throw new Error(msg);
-    },
-  },
-};
-
 const Tactics = (() => {
   // Goal = G Proof [Proofs]
 

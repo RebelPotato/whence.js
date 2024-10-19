@@ -6,5 +6,11 @@ function dbg(...args) {
 const { Arr, Bool, Tvar, vari, app, fn, EMP, REFL, ASSUME, eq } = Kernel;
 const { prove } = Tactics;
 
-const landr = BoolThms.AND(ASSUME(vari(Bool, "p")), ASSUME(vari(Bool, "q")));
-console.log(BoolThms.AND_R(landr).show());
+const p = vari(Bool, "p");
+const q = vari(Bool, "q");
+const landr = BoolThms.AND(ASSUME(p), ASSUME(q));
+console.log(landr.show());
+console.log(toHex(landr.hash()));
+const ltolandr = BoolThms.DISCH(p, landr);
+console.log(ltolandr.show());
+console.log(BoolThms.MP(ltolandr, ASSUME(p)).show());

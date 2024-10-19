@@ -1,8 +1,8 @@
 const BoolThms = (() => {
   const {
+    Type,
     Bool,
     Arr,
-    Tvar,
     eq,
     fn,
     app,
@@ -22,18 +22,18 @@ const BoolThms = (() => {
   const { SYM, NORM } = EqualThms;
 
   // truth
-  const [T, T_DEF] = mkConst("T", () =>
+  const [T, T_DEF] = mkConst(
+    "T",
     eq(
       fn(Bool, (x) => x),
       fn(Bool, (x) => x)
     )
   );
 
-  const freshT = (name, fn) => fn(Tvar(name));
-  const freshTs = (names, fn) => fn(...names.map(Tvar));
-
-  const [forallX, FORALL_DEF] = mkOp("∀", 1, () =>
-    freshT("A", (A) =>
+  const [forallX, FORALL_DEF] = mkOp(
+    "∀",
+    2,
+    fn(Type, (A) =>
       fn(Arr(A, Bool), (p) =>
         eq(
           p,
@@ -42,39 +42,51 @@ const BoolThms = (() => {
       )
     )
   );
-  const forall = (body) => forallX(fn(Bool, body));
+  const forall = (A, body) => forallX(A, fn(A, body));
 
-  const [F, F_DEF] = mkConst("F", () => forall((x) => x));
+  const [F, F_DEF] = mkConst(
+    "F",
+    forall(Bool, (x) => x)
+  );
 
-  const [and, AND_DEF] = mkBinOp("∧", () =>
+  const [and, AND_DEF] = mkBinOp(
+    "∧",
     fn(Bool, (p) =>
       fn(Bool, (q) =>
         eq(
           fn(Arr(Bool, Arr(Bool, Bool)), (f) => app(app(f, p), q)),
-          fn(Arr(Bool, Arr(Bool, Bool)), (f) => app(app(f, T()), T()))
+          fn(Arr(Bool, Arr(Bool, Bool)), (f) => app(app(f, T), T))
         )
       )
     )
   );
 
-  const [imp, IMP_DEF] = mkBinOp("⇒", () =>
+  const [imp, IMP_DEF] = mkBinOp(
+    "⇒",
     fn(Bool, (p) => fn(Bool, (q) => eq(and(p, q), p)))
   );
 
-  const [not, NOT_DEF] = mkOp("¬", 1, () => fn(Bool, (p) => imp(p, F())));
+  const [not, NOT_DEF] = mkOp(
+    "¬",
+    1,
+    fn(Bool, (p) => imp(p, F))
+  );
 
-  const [or, OR_DEF] = mkBinOp("∨", () =>
+  const [or, OR_DEF] = mkBinOp(
+    "∨",
     fn(Bool, (p) =>
-      fn(Bool, (q) => forall((r) => imp(imp(p, r), imp(imp(q, r), r))))
+      fn(Bool, (q) => forall(Bool, (r) => imp(imp(p, r), imp(imp(q, r), r))))
     )
   );
 
-  const [existX, EXIST_DEF] = mkOp("∃", 1, () =>
-    freshT("A", (A) =>
+  const [existX, EXIST_DEF] = mkOp(
+    "∃",
+    1,
+    fn(Type, (A) =>
       fn(Arr(A, Bool), (p) =>
-        forall((q) =>
+        forall(Bool, (q) =>
           imp(
-            forall((x) => imp(app(p, x), q)), // if q is the term we want
+            forall(A, (x) => imp(app(p, x), q)), // if q is the term we want
             q // then q is true
           )
         )
@@ -84,7 +96,7 @@ const BoolThms = (() => {
   const exist = (body) => existX(fn(Bool, body));
 
   // |- T
-  const TRUTH = EMP(SYM(T_DEF()), REFL(fn(Bool, (x) => x)));
+  const TRUTH = EMP(SYM(T_DEF), REFL(fn(Bool, (x) => x)));
   // A |- (l = T) / A |- l
   const EQT_ELIM = (thm) => EMP(SYM(thm), TRUTH);
   // A |- l / A |- (l = T)
@@ -115,14 +127,12 @@ const BoolThms = (() => {
     return EMP(SYM(AND_THM(thm1.then, thm2.then)), thm);
   }
 
-  const K_comb = () =>
-    freshTs(["A", "B"], (A, B) => fn(A, (x) => fn(B, (_) => x)));
-  const KI_comb = () =>
-    freshTs(["A", "B"], (A, B) => fn(A, (_) => fn(B, (y) => y)));
+  const K_comb = fn(Bool, (x) => fn(Bool, (_) => x));
+  const KI_comb = fn(Bool, (_) => fn(Bool, (y) => y));
 
   const AND_SEL = (comb) => (thm) => {
     const [p, q] = de("∧", thm.then);
-    const lem = EAPP(EMP(AND_THM(p, q), thm), REFL(comb()));
+    const lem = EAPP(EMP(AND_THM(p, q), thm), REFL(comb));
     const [lemL, lemR] = de("eq", lem.then);
 
     return EQT_ELIM(TRANS(SYM(NORM(lemL)), TRANS(lem, NORM(lemR))));
@@ -130,6 +140,25 @@ const BoolThms = (() => {
 
   const AND_L = AND_SEL(K_comb);
   const AND_R = AND_SEL(KI_comb);
+
+  const NOT_INTRO = (thm) => EMP(SYM(NOT_THM(thm.then)), thm);
+
+  // u, A |- t  /  A |- u => t
+  function DISCH(u, thm) {
+    const lem0 = AND_L(ASSUME(and(u, thm.then))); // u, t |- u
+    const lem1 = AND(ASSUME(u), thm); // u, A |- u and t
+    const lem2 = DEDUCT(lem1, lem0); // A |- u
+    console.log(lem2.show());
+    return EMP(SYM(IMP_THM(u, thm.then)), lem2);
+  }
+
+  // A |- t1 => t2,   B |- t1  /  A union B |- t2
+  function MP(t1impt2thm, t1thm) {
+    const [t1, t2] = de("⇒", t1impt2thm.then);
+    return AND_L(
+      EQT_ELIM(TRANS(EMP(IMP_THM(t1, t2), t1impt2thm), EQT_INTRO(t1thm)))
+    );
+  }
 
   return {
     // constants and operations
@@ -160,5 +189,8 @@ const BoolThms = (() => {
     AND,
     AND_L,
     AND_R,
+    NOT_INTRO,
+    DISCH,
+    MP,
   };
 })();

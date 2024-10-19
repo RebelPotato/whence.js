@@ -13,31 +13,7 @@ class ShowEnv {
   }
 }
 
-class UnifyEnv {
-  constructor() {
-    this.env = new Map();
-  }
-  walk(x) {
-    if (!this.env.has(x)) return x;
-    const y = this.env.get(x);
-    const z = this.walk(y);
-    this.env.set(x, z);
-    return z;
-  }
-  set(x, y) {
-    if (y.has(x))
-      throw Error(
-        `unify: ${y.show()} contains circular reference to ${x.show()}`
-      );
-    this.env.set(x, y);
-    return this;
-  }
-  notEmpty(fn, elseFn) {
-    if (this.env.size > 0) return fn(this);
-    return elseFn();
-  }
-}
-
+const bit256 = (1n << 256n) - 1n;
 // hex string representation of a BigInt with 256 bits
 const toHex = (x) => x.toString(16).padStart(64, "0");
 
@@ -52,7 +28,7 @@ const sdbm = (str, initial = BigInt(0)) => {
       (hashCode << 16n) -
       hashCode;
     // get last 256 bits
-    hashCode = hashCode & 0xffffffffffffffffn;
+    hashCode = hashCode & bit256;
   }
   return hashCode;
 };
@@ -76,96 +52,207 @@ function matchOr(name, args, self) {
   };
 }
 
-const Kernel = (() => {
+function once(fn) {
+  let done = false;
+  let result = null;
+  return function (...args) {
+    if (!done) {
+      result = fn(...args);
+      done = true;
+    }
+    return result;
+  };
+}
+
+const Maybe = {
+  Just: (value) => ({
+    match: (cases) => cases.Just(value),
+    map: (fn) => Maybe.Just(fn(value)),
+    app: (x) => x.map(value),
+    pipe: (fn) => fn(value),
+    orElse: (_) => value,
+    orThrow: (_) => value,
+    isNothing: false,
+  }),
+  Nothing: {
+    match: (cases) => cases.Nothing(),
+    map: (_) => Maybe.Nothing,
+    app: (_) => Maybe.Nothing,
+    pipe: (_) => Maybe.Nothing,
+    orElse: (fn) => fn(),
+    orThrow: (msg = "Nothing") => {
+      throw new Error(msg);
+    },
+    isNothing: true,
+  },
+};
+
+const Either = {
+  Left: (value) => ({
+    match: (cases) => cases.Left(value),
+    map: (_) => Either.Left(value),
+    orMap: (fn) => Either.Left(fn(value)),
+    app: (_) => Either.Left(value),
+    pipe: (_) => Either.Left(value),
+    unwrap: (_) => value,
+    orThrow: () => {
+      throw new Error(value);
+    },
+  }),
+  Right: (value) => ({
+    match: (cases) => cases.Right(value),
+    map: (fn) => Either.Right(fn(value)),
+    orMap: (_) => Either.Right(value),
+    app: (x) => x.map(value),
+    pipe: (fn) => fn(value),
+    unwrap: (_) => value,
+    orThrow: () => value,
+  }),
+  collect(eithers) {
+    const acc = [];
+    for (const e of eithers) {
+      e.match({
+        Right: (x) => acc.push(x),
+        Left: () => {
+          return e;
+        },
+      });
+    }
+    return Either.Right(acc);
+  },
+};
+
+// options for the kernel
+const Kernel = KernelGen({
+  termToType: false, // dependent types
+  typeToType: false, // type operators
+  typeToTerm: true, // universal types
+});
+
+function KernelGen({ termToType, typeToType, typeToTerm }) {
+  // ------------------------------------------------------------
+  // Kinds
+  // ------------------------------------------------------------
+
+  const Wat = {
+    match: matchOr("Wat", [], () => Wat),
+    // type: Type is set later
+    eq: (other) => other === Wat,
+    hollow: (_) => Maybe.Just((_) => Wat),
+    show: () => "Wat",
+    hash: () => sdbm("Wat"),
+  };
+
+  const Type = {
+    match: matchOr("Type", [], () => Type),
+    type: Wat,
+    eq: (other) => other === Type,
+    hollow: (_) => Maybe.Just((_) => Type),
+    show: () => "Type",
+    hash: () => sdbm("Type"),
+  };
+  Wat.type = Type;
+
+  const isType = (x) => x.type.type.eq(Wat);
+  const isTerm = (x) => x.type.type.eq(Type);
+
   // ------------------------------------------------------------
   // Types
   // ------------------------------------------------------------
 
   const Bool = {
-    match: (cases) => {
-      if (Object.hasOwn(cases, "Bool")) return cases.Bool();
-      return cases._(Bool);
-    },
-    eq(other) {
-      return other === Bool;
-    },
-    show: (env = new ShowEnv()) => "Bool",
-    has: (other) => Bool.eq(other),
-    unify: (t, env) =>
-      t.match({
-        Tvar: () => {
-          const t0 = env.walk(t);
-          return t0.match({
-            Tvar: () => env.set(t0, Bool),
-            _: () => Bool.unify(t0, env),
-          });
-        },
-        Bool: () => env,
-        _: () => fail(`Bool: type mismatch, ${t.show()} is not Bool`),
-      }),
-    reType: (_) => Bool,
-    hash: (env = new ShowEnv()) => sdbm("Bool"),
+    match: matchOr("Bool", [], () => Bool),
+    type: Type,
+    eq: (other) => other === Bool,
+    hollow: (_v) => Maybe.Just((_) => Bool),
+    show: () => "Bool",
+    hash: () => sdbm("Bool"),
   };
 
-  function Arr(l, r) {
+  // hollow turns a type into Maybe (Var -> Term), allowing swaping one variable for another
+  function hollow2(l, r, comb) {
+    return (v) => {
+      const newl = l.hollow(v);
+      const newr = r.hollow(v);
+      if (newl.isNothing && newr.isNothing) return Maybe.Nothing;
+      const lFn = newl.orElse(() => (_) => l);
+      const rFn = newr.orElse(() => (_) => r);
+      return Maybe.Just((v0) => comb(lFn(v0), rFn(v0)));
+    };
+  }
+
+  function Pi(ptype, body) {
+    if (!ptype.eq(Type) && isTerm(ptype))
+      // ptype is the type of the input variable, which must be a type
+      fail(
+        `Pi: type mismatch, ${ptype.show()} :: ${ptype.type.show()} should be a type`
+      );
+    const Tmp = vari(ptype);
+    const ret = body(Tmp);
+    const inputKind = ptype.type;
+    const outputKind = ret.type;
+
+    if (inputKind.eq(Type) && outputKind.eq(Wat) && !termToType)
+      fail(
+        `Pi: this kernel cannot build a function from term :: ${ptype.show()} to type :: ${ret.show()}`
+      );
+    if (inputKind.eq(Wat) && outputKind.eq(Wat) && !typeToType)
+      fail(
+        `Pi: this kernel cannot build a function from type :: ${ptype.show()} to type :: ${ret.show()}`
+      );
+    if (inputKind.eq(Wat) && outputKind.eq(Type) && !typeToTerm)
+      fail(
+        `Pi: this kernel cannot build a function from type :: ${ptype.show()} to term :: ${ret.show()}`
+      );
+    
+    const hasTmp = ret.hollow(Tmp).isNothing;
+
+    // when inputKind = Type and outputKind = Type, this is just the arrow type
     const obj = {
-      match: matchOr("Arr", [l, r], () => obj),
+      match: matchOr("Pi", [ptype, body], () => obj),
+      type: Type,
       eq: (other) =>
         other.match({
-          Arr: (l2, r2) => l.eq(l2) && r.eq(r2),
+          Pi: (otherPtype, otherBody) => {
+            if (!ptype.eq(otherPtype)) return false;
+            const T = vari(ptype);
+            return body(T).eq(otherBody(T));
+          },
           _: () => false,
         }),
-      show: (env = new ShowEnv()) => `(${l.show(env)} -> ${r.show(env)})`,
-      has: (x) => l.has(x) || r.has(x),
-      unify: (t, env) =>
-        t.match({
-          Tvar: () => {
-            const t0 = env.walk(t);
-            return t0.match({
-              Tvar: () => env.set(t0, obj),
-              _: () => obj.unify(t0, env),
-            });
-          },
-          Arr: (l2, r2) => {
-            env = l.unify(l2, env);
-            env = r.unify(r2, env);
-            return env;
-          },
-          _: () =>
-            fail(`(->): type mismatch: ${t.show()} is not ${obj.show()}`),
-        }),
-      reType: (env) =>
-        env.notEmpty(
-          () => Arr(l.reType(env), r.reType(env)),
-          () => obj
-        ),
-      hash: (env = new ShowEnv()) =>
-        combine(sdbm("Arr"), l.hash(env), r.hash(env)),
+      hollow: (v) => {
+        const T = vari(ptype);
+        return hollow2(ptype, body(T), (p, b) => Pi(p, (x) => b.hollow(T)(x)))(
+          v
+        );
+      },
+      show: (env = new ShowEnv()) => {
+        if(hasTmp) {
+          const T = vari(ptype);
+          env.get(T);
+          return `(Π${T.show(env)} :: ${ptype.show(env)}. ${body(T).show(env)})`;
+        }
+        return `(${ptype.show(env)} -> ${ret.show(env)})`;
+      },
+      hash: (env = new ShowEnv()) => {
+        const T = vari(ptype);
+        env.get(T);
+        return combine(sdbm("Pi"), T.hash(env), body(T).hash(env));
+      },
+      app: (arg) => {
+        if (!ptype.eq(arg.type))
+          fail(
+            `Pi: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} to ${obj.show()}`
+          );
+        return body(arg);
+      },
     };
     return Object.freeze(obj);
   }
 
-  function Tvar(name = "T") {
-    const obj = {
-      id: crypto.randomUUID(),
-      match: matchOr("Tvar", [name], () => obj),
-      eq: (other) => other === obj,
-      show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
-      has: (x) => obj.eq(x),
-      unify: (t, env) =>
-        t.match({
-          Tvar: () => {
-            const t0 = env.walk(t);
-            if (t0.eq(t)) return env; // beware infinite loops
-            return env.set(obj, t0);
-          },
-          _: () => t.unify(obj, env),
-        }),
-      reType: (env) => env.walk(obj),
-      hash: (env = new ShowEnv()) =>
-        combine(sdbm("Tvar"), sdbm(`${name}${env.get(obj)}`)),
-    };
-    return Object.freeze(obj);
+  // an arrow is an alias for a pi type with no free variables inside.
+  function Arr(l, r) {
+    return Pi(l, () => r);
   }
 
   // ------------------------------------------------------------
@@ -174,9 +261,7 @@ const Kernel = (() => {
   // ------------------------------------------------------------
 
   function eqOrThrow(t1, t2, errorFn) {
-    if (!t1.eq(t2)) {
-      throw Error(errorFn());
-    }
+    if (!t1.eq(t2)) fail(errorFn());
   }
 
   function vari(type, name = "x") {
@@ -185,23 +270,7 @@ const Kernel = (() => {
       type,
       eq: (other) => other === obj,
       show: (env = new ShowEnv()) => `${name}${env.get(obj)}`,
-      has: (x) => obj.eq(x),
-      reType: (env) =>
-        env.notEmpty(
-          () => {
-            const newType = type.reType(env);
-            if (newType.eq(type)) return obj;
-            return vari(type.reType(env), name);
-          },
-          () => obj
-        ),
-      replace: (x, y) => {
-        if (obj.eq(x)) {
-          if (!obj.type.eq(y.type)) obj.reType(y.type);
-          return y;
-        }
-        return obj;
-      },
+      hollow: (v) => (v === obj ? Maybe.Just((v0) => v0) : Maybe.Nothing),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("vari"), type.hash(env), sdbm(`${name}${env.get(obj)}`)),
     };
@@ -210,39 +279,41 @@ const Kernel = (() => {
 
   // use a function as the body to avoid alpha conversions
   function fn(ptype, body) {
-    const ret = body(vari(ptype)).type;
-    const type = Arr(ptype, ret);
+    const type = Pi(ptype, (x) => body(x).type); // naive type inference?
     const obj = {
       match: matchOr("fn", [ptype, body], () => obj),
       type,
       eq: (other) =>
         other.match({
           fn: (otherType, otherBody) => {
+            if (!ptype.eq(otherType)) return false;
             const x = vari(ptype);
-            return ptype.eq(otherType) && body(x).eq(otherBody(x));
+            return body(x).eq(otherBody(x));
           },
           _: () => false,
         }),
       show: (env = new ShowEnv()) => {
         const x = vari(ptype);
         env.get(x);
-        return `(λ${x.show(env)}. ${body(x).show(env)})`;
+        return `(λ${x.show(env)} :: ${ptype.show(env)}. ${body(x).show(env)})`;
       },
-      has: (x) => body(vari(ptype)).has(x),
-      reType: (env) =>
-        env.notEmpty(
-          () => fn(ptype.reType(env), (x) => body(x).reType(env)),
-          () => obj
-        ),
-      replace: (x, y) =>
-        fn(ptype, (z) => {
-          const tmp = vari(ptype);
-          return body(tmp).replace(x, y).replace(tmp, z); // tmp is introduced in case z = x
-        }),
+      hollow: (v) => {
+        const x = vari(ptype);
+        return hollow2(ptype, body(x), (p, b) =>
+          fn(p, (x0) => b.hollow(x)(x0))
+        )(v);
+      },
       hash: (env = new ShowEnv()) => {
         const x = vari(ptype);
         env.get(x);
         return combine(sdbm("fn"), x.hash(env), body(x).hash(env));
+      },
+      app: (arg) => {
+        if (!ptype.eq(arg.type))
+          fail(
+            `fn: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} but expected ${ptype.show()}`
+          );
+        return body(arg);
       },
     };
     return Object.freeze(obj);
@@ -250,17 +321,12 @@ const Kernel = (() => {
 
   function app(op, arg) {
     const opType = op.type;
-    const argType = arg.type;
     const type = opType.match({
-      Arr: (l, r) => {
-        const env = l.unify(argType, new UnifyEnv());
-        return r.reType(env);
-      },
-      _: () => {
-        throw Error(
-          `app: type mismatch, tried to apply non-function ${op.show()} :: ${opType.show()} to an argument`
-        );
-      },
+      Pi: () => opType.app(arg),
+      _: () =>
+        fail(
+          `app: type mismatch, tried to apply non-function ${op.show()} :: ${opType.show()}`
+        ),
     });
 
     const obj = {
@@ -272,13 +338,7 @@ const Kernel = (() => {
           _: () => false,
         }),
       show: (env = new ShowEnv()) => `(${op.show(env)} ${arg.show(env)})`,
-      has: (x) => op.has(x) || arg.has(x),
-      reType: (env) =>
-        env.notEmpty(
-          () => app(op.reType(env), arg.reType(env)),
-          () => obj
-        ),
-      replace: (x, y) => app(op.replace(x, y), arg.replace(x, y)),
+      hollow: hollow2(op, arg, app),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("app"), op.hash(env), arg.hash(env)),
     };
@@ -288,9 +348,13 @@ const Kernel = (() => {
   function eq(lhs, rhs) {
     const type1 = lhs.type;
     const type2 = rhs.type;
-    const env = type1.unify(type2, new UnifyEnv());
-    lhs = lhs.reType(env);
-    rhs = rhs.reType(env);
+
+    eqOrThrow(
+      type1,
+      type2,
+      () =>
+        `eq: type mismatch, ${lhs.show()} :: ${type1.show()} and ${rhs.show()} :: ${type2.show()} are not of equal types`
+    );
 
     const type = Bool;
     const obj = {
@@ -302,13 +366,7 @@ const Kernel = (() => {
           _: () => false,
         }),
       show: (env = new ShowEnv()) => `(${lhs.show(env)} = ${rhs.show(env)})`,
-      has: (x) => lhs.has(x) || rhs.has(x),
-      reType: (env) =>
-        env.notEmpty(
-          () => eq(lhs.reType(env), rhs.reType(env)),
-          () => obj
-        ),
-      replace: (x, y) => eq(lhs.replace(x, y), rhs.replace(x, y)),
+      hollow: hollow2(lhs, rhs, eq),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("="), lhs.hash(env), rhs.hash(env)),
     };
@@ -353,8 +411,8 @@ const Kernel = (() => {
         `${ifs.map((x) => x.show(env)).join(", ")} ⊢ ${then.show(env)}`,
       replace: (x, y) =>
         Sequent(
-          ifs.map((t) => t.replace(x, y)),
-          then.replace(x, y)
+          ifs.map((t) => t.hollow(x).orElse(() => (_) => t)(y)),
+          then.hollow(x).orElse(() => (_) => then)(y)
         ),
       hash: (env = new ShowEnv()) =>
         combine(sdbm("⊢"), then.hash(env), ...ifs.map((t) => t.hash(env))),
@@ -362,10 +420,12 @@ const Kernel = (() => {
     return Object.freeze(obj);
   }
 
+  // t  /  |- t = t
   function REFL(term) {
     return Sequent([], eq(term, term));
   }
 
+  // M |- a = b,   N |- b = c   /   M union N |- a = c
   function TRANS(aIsb, bIsc) {
     const ifs1 = aIsb.ifs;
     const ifs2 = bIsc.ifs;
@@ -384,40 +444,41 @@ const Kernel = (() => {
     return Sequent(ifs, then);
   }
 
+  // M |- a = b,   N |- c = d   /   M union N |- a c = b d
   function EAPP(opThm, argThm) {
     const [a, b] = deEq(opThm.then);
     const [c, d] = deEq(argThm.then);
     return Sequent(merge(opThm.ifs, argThm.ifs), eq(app(a, c), app(b, d)));
   }
 
+  // M |- a = b   /   M\x |- (λx. a) = (λx. b)
   function ABS(v, thm) {
     const [a, b] = deEq(thm.then);
 
-    for (const t of thm.ifs) {
-      if (t.has(v))
-        throw Error(
-          `ABS: free variable, variiable ${v.show()} is free in condition ${t.show()}`
+    for (const t of thm.ifs)
+      if (!t.hollow(v).isNothing)
+        fail(
+          `ABS: free variable, variable ${v.show()} is free in condition ${t.show()}`
         );
-    }
 
-    // replace all occurences of v in t with x
-    const then = eq(
-      fn(v.type, (x) => a.replace(v, x)),
-      fn(v.type, (x) => b.replace(v, x))
-    );
+    // replace all occurences of v in a, b with x
+    const aFn = a.hollow(v).orElse(() => (_) => a);
+    const bFn = b.hollow(v).orElse(() => (_) => b);
+    const then = eq(fn(v.type, aFn), fn(v.type, bFn));
     return Sequent(remove(thm.ifs, v), then);
   }
 
+  // (op arg) reduces one step to v   /   |- op arg = v
   function APP(op, arg) {
-    const lhs = app(op, arg);
-    const [_, body] = de("fn", op);
-    return Sequent([], eq(lhs, body(arg)));
+    return Sequent([], eq(app(op, arg), op.app(arg)));
   }
 
+  // a  /  a |- a
   function ASSUME(term) {
     return Sequent([term], term);
   }
 
+  // M |- p,   N |- p = q   /   M union N |- q
   function EMP(pqThm, pThm) {
     const p = pThm.then;
     const [p0, q] = deEq(pqThm.then);
@@ -430,6 +491,7 @@ const Kernel = (() => {
     return Sequent(merge(pThm.ifs, pqThm.ifs), q);
   }
 
+  // b, M |- a,   a, N |- b   /   M\b union N\a |- a = b
   function DEDUCT(aThm, bThm) {
     const a = aThm.then;
     const b = bThm.then;
@@ -445,14 +507,11 @@ const Kernel = (() => {
   // Creating new constants, terms and operators
   // ------------------------------------------------------------
 
-  function mkOp(name, arity, termFn, attrGen = () => ({})) {
+  function mkOp(name, arity, term, attrGen = () => ({})) {
     function gen(...args) {
-      if (args.length != arity) {
-        throw Error(
-          `${name}: arity mismatch, ${name} expects ${arity} arguments`
-        );
-      }
-      let rhs = termFn();
+      if (args.length != arity)
+        fail(`${name}: arity mismatch, ${name} expects ${arity} arguments`);
+      let rhs = term;
       for (const arg of args) {
         rhs = app(rhs, arg);
       }
@@ -465,21 +524,11 @@ const Kernel = (() => {
             [name]: (...otherArgs) => args.every((x, i) => x.eq(otherArgs[i])),
             _: () => false,
           }),
-        has: (other) => obj.eq(other) || args.some((x) => x.has(other)),
-        reType: (env) =>
-          env.notEmpty(
-            () => {
-              const [gen, _] = mkOp(
-                name,
-                arity,
-                () => termFn().reType(env),
-                attrGen
-              );
-              return gen(...args.map((x) => x.reType(env)));
-            },
-            () => obj
-          ),
-        replace: (x, y) => (obj.eq(x) ? y : obj),
+        hollow: (v) => {
+          const newArgs = args.map((x) => x.hollow(v).orElse(() => (_) => x));
+          if (newArgs.some((x) => x.isNothing)) return Maybe.Nothing;
+          return Maybe.Just((v0) => gen(...newArgs.map((x) => x(v0)))); // assume term has no variables
+        },
         show: (env = new ShowEnv()) =>
           `(${name} ${args.map((x) => x.show(env)).join(" ")})`,
         hash: (env = new ShowEnv()) =>
@@ -491,13 +540,11 @@ const Kernel = (() => {
       return Object.freeze(obj);
     }
     function DEF(...args) {
-      if (args.length != arity) {
-        throw Error(
-          `${name}: arity mismatch: ${name} expects ${arity} arguments`
-        );
-      }
+      if (args.length != arity)
+        fail(`${name}: arity mismatch: ${name} expects ${arity} arguments`);
+
       const lhs = gen(...args);
-      let rhs = termFn();
+      let rhs = term;
       for (const arg of args) {
         rhs = app(rhs, arg);
       }
@@ -506,11 +553,12 @@ const Kernel = (() => {
     return [gen, DEF];
   }
 
-  function mkConst(name, termFn, attrs = {}) {
-    return mkOp(name, 0, termFn, () => ({
-      show: (env = new ShowEnv()) => name,
+  function mkConst(name, term, attrs = {}) {
+    const [g, d] = mkOp(name, 0, term, () => ({
+      show: () => name,
       ...attrs,
     }));
+    return [g(), d()];
   }
 
   function mkBinOp(name, term, attrGen = () => ({})) {
@@ -565,9 +613,7 @@ const Kernel = (() => {
   function de(name, t) {
     return t.match({
       [name]: (...args) => [...args],
-      _: () => {
-        throw Error(`Not ${name}: ${t.show()} :: ${t.type.show()}`);
-      },
+      _: () => fail(`Not ${name}: ${t.show()} :: ${t.type.show()}`),
     });
   }
 
@@ -576,10 +622,12 @@ const Kernel = (() => {
   }
 
   return {
+    // kinds
+    Type,
     // types
     Bool,
+    Pi,
     Arr,
-    Tvar,
     // terms
     vari,
     fn,
@@ -602,4 +650,4 @@ const Kernel = (() => {
     // utils
     de,
   };
-})();
+}
