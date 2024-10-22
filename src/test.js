@@ -48,7 +48,7 @@ const parser = mkParser({
     arity: 2,
     alias: {
       readable: "or",
-      ascii: "|",
+      ascii: "||",
     },
   },
   "∀": {
@@ -65,7 +65,15 @@ const parser = mkParser({
       ascii: "EE",
     },
   },
-});
+  "⇒": {
+    binop: true,
+    arity: 2,
+    alias: {
+      readable: "implies",
+      ascii: "=>",
+    },
+  },
+}, 9);
 
 function parse(str) {
   const result = parser(str);
@@ -73,6 +81,5 @@ function parse(str) {
     console.error("parse trace: ", result.trace);
     throw new Error("parse failed");
   }
-  console.log("parse trace: ", result.trace);
   return result.matched;
 }

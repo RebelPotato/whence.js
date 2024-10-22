@@ -7,6 +7,14 @@ function mkParser(Defs, tracing = 0) {
     return arr;
   }
 
+  function memo(fn) {
+    const store = {};
+    return function (x) {
+      if (store[x] === undefined) store[x] = fn(x);
+      return store[x];
+    };
+  }
+
   // a result is one of {matched: str, rest: str, trace: [str]} | {error: str, rest: str, trace: [str]}
   function Success(matched, rest, trace) {
     const obj = { matched, rest, trace: prune(trace), failed: false };
@@ -25,7 +33,7 @@ function mkParser(Defs, tracing = 0) {
   const id = (x) => x;
 
   function literal(s, fn = id) {
-    return (str) => {
+    return memo((str) => {
       if (str.startsWith(s)) {
         return Success(fn(s), str.slice(s.length), [`literal ${s}`]);
       } else {
@@ -36,26 +44,26 @@ function mkParser(Defs, tracing = 0) {
           )}'`,
         ]);
       }
-    };
+    });
   }
 
   function regex(re, fn = id) {
-    return (str) => {
+    return memo((str) => {
       const match = str.match(re);
       if (match && match.index === 0) {
         return Success(fn(match[0]), str.slice(match[0].length), [
-          `regex ${re}`,
+          `regex ${re} got ${match[0]}`,
         ]);
       } else {
         return Fail(str, [
           `regex failed: Expected '${re}' but got '${trimShow(str)}'`,
         ]);
       }
-    };
+    });
   }
 
   function sequence(name, parsers, fn = id) {
-    return (str) => {
+    return memo((str) => {
       let rest = str;
       const matched = [];
       const trace = [];
@@ -69,11 +77,11 @@ function mkParser(Defs, tracing = 0) {
         rest = res.rest;
       }
       return Success(fn(matched), rest, [name, ...trace]);
-    };
+    });
   }
 
   function oneOf(name, parsers, fn = id) {
-    return (str) => {
+    return memo((str) => {
       const trace = [];
       for (let i = 0; i < parsers.length; i++) {
         const res = parsers[i](str);
@@ -83,11 +91,11 @@ function mkParser(Defs, tracing = 0) {
         }
       }
       return Fail(str, [`${name} oneOf failed`, trace]);
-    };
+    });
   }
 
   function many(parser, fn = id) {
-    return (str) => {
+    return memo((str) => {
       let rest = str;
       const matched = [];
       const trace = ["many"];
@@ -100,29 +108,29 @@ function mkParser(Defs, tracing = 0) {
         matched.push(res.matched);
         rest = res.rest;
       }
-    };
+    });
   }
 
   function maybe(parser, fn = id) {
-    return (str) => {
+    return memo((str) => {
       const res = parser(str);
       if (res.failed) {
         return Success(fn([]), str, ["maybe failed", res.trace]);
       } else {
         return Success(fn([res.matched]), res.rest, ["maybe", res.trace]);
       }
-    };
+    });
   }
 
   function not(parser, fn = () => null) {
-    return (str) => {
+    return memo((str) => {
       const res = parser(str);
       if (res.failed) {
         return Success(fn(), str, ["not", res.trace]);
       } else {
         return Fail(str, ["not failed", res.trace]);
       }
-    };
+    });
   }
 
   const intersperse = (inter, list) =>
@@ -152,7 +160,7 @@ function mkParser(Defs, tracing = 0) {
         term,
       ],
       ([ifs, lastIf, _, then]) => ({
-        name: "theorem",
+        op: "theorem",
         ifs: [...ifs, ...lastIf],
         then,
       })
@@ -160,23 +168,23 @@ function mkParser(Defs, tracing = 0) {
   }
 
   function term(str) {
-    return oneOf("term", [parens, lam, pi, bin, eq, def, vari, app])(str);
+    return oneOf("term", [lam, pi, bin, eq, app, parens, def, vari])(str);
   }
   function eqless(str) {
-    return oneOf("eqless", [parens, lam, pi, bin, def, vari, app])(str);
+    return oneOf("eqless", [lam, pi, bin, app, parens, def, vari])(str);
   }
   function binless(str) {
-    return oneOf("binless", [parens, lam, pi, def, vari, app])(str);
+    return oneOf("binless", [lam, pi, app, parens, def, vari])(str);
   }
   function appless(str) {
-    return oneOf("appless", [parens, lam, pi, vari])(str);
+    return oneOf("appless", [lam, pi, parens, def, vari])(str);
   }
   function lam(str) {
     return wseq(
       "lam",
       [regex(/λ|fn|lambda/), vari, literal(":"), term, literal("."), term],
       ([_, v, __, ty, ___, tm]) => ({
-        name: "lam",
+        op: "lam",
         vari: v,
         type: ty,
         term: tm,
@@ -184,15 +192,23 @@ function mkParser(Defs, tracing = 0) {
     )(str);
   }
   function app(str) {
-    return wseq("app", [appless, appless, many(appless)], ([x, arg, args]) => ({
-      name: "app",
-      x,
-      args: [arg, ...args],
-    }))(str);
+    return wseq(
+      "app",
+      [
+        appless,
+        appless,
+        many(sequence("app2+", [appless, whitespace], ([x, _]) => x)),
+      ],
+      ([x, arg, args]) => ({
+        op: "app",
+        x,
+        args: [arg, ...args],
+      })
+    )(str);
   }
   function eq(str) {
     return wseq("eq", [eqless, literal("="), eqless], ([lhs, _, rhs]) => ({
-      name: "eq",
+      op: "eq",
       lhs,
       rhs,
     }))(str);
@@ -200,9 +216,9 @@ function mkParser(Defs, tracing = 0) {
   function vari(str) {
     return sequence(
       "vari",
-      [not(oneOf("binNames", binNames)), regex(/[a-zA-Z\_][a-zA-Z0-9\_]*/)],
+      [not(def), regex(/[a-zA-Z\_][a-zA-Z0-9\_]*/)],
       ([_, x]) => ({
-        name: "vari",
+        op: "vari",
         vari: x,
       })
     )(str);
@@ -218,46 +234,36 @@ function mkParser(Defs, tracing = 0) {
     return wseq(
       "pi",
       [regex(/Π|Pi/), vari, literal(":"), term, literal("."), term],
-      ([_, v, __, ty, ___, tm]) => ({ name: "pi", vari: v, type: ty, term: tm })
+      ([_, v, __, ty, ___, tm]) => ({ op: "pi", vari: v, type: ty, term: tm })
     )(str);
   }
 
-  function mkOp(name, alias, arity) {
-    const parsers = [literal(alias)];
-    for (let i = 0; i < arity; i++) {
-      parsers.push(appless);
-    }
-    return wseq(name, parsers, ([_, ...args]) => ({
-      name,
-      args,
-    }));
-  }
-  function mkBinOp(name, alias) {
-    return wseq(name, [binless, literal(alias), binless], ([lhs, _, rhs]) => ({
-      name,
+  function mkBinOp(op, alias) {
+    return wseq(op, [binless, literal(alias), binless], ([lhs, _, rhs]) => ({
+      op,
       lhs,
       rhs,
     }));
   }
-  const defParsers = [];
   const binParsers = [];
   const binNames = [];
-  for (const c of ["Bool", "Type", "Wat"]) {
-    defParsers.push(mkOp(c, c, 0));
+  const constNames = [];
+  for (const c of ["Bool", "Type"]) {
+    constNames.push(literal(c, (_) => ({ op: "const", const: c })));
   }
   for (const d of Object.keys(Defs)) {
     const names = [d, ...Object.values(Defs[d].alias)];
-    const arity = Defs[d].arity;
-    if (Defs[d].binop) {
+    if (Defs[d].binop)
       for (const name of names) {
         binParsers.push(mkBinOp(d, name));
+        constNames.push(literal(`(${name})`, (_) => ({ op: "const", const: d })));
         binNames.push(literal(name));
       }
-    } else {
-      for (const name of names) defParsers.push(mkOp(d, name, arity));
-    }
+    else
+      for (const name of names)
+        constNames.push(literal(name, (_) => ({ op: "const", const: d })));
   }
-  const def = oneOf("def", defParsers);
+  const def = oneOf("def", constNames);
   const bin = oneOf("bin", binParsers);
 
   return theorem;
