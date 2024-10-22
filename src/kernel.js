@@ -136,7 +136,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
 
   const Wat = {
     match: matchOr("Wat", [], () => Wat),
-    // type: Type is set later
+    // does not have a type, so Wat cannot be constructed as a term.
     eq: (other) => other === Wat,
     hollow: (_) => Maybe.Just((_) => Wat),
     show: () => "Wat",
@@ -153,7 +153,6 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     hash: () => sdbm("Type"),
     free: [],
   };
-  Wat.type = Type;
 
   const isType = (x) => x.type.type.eq(Wat);
   const isTerm = (x) => x.type.type.eq(Type);

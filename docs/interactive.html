@@ -5,15 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tests</title>
     <script src="../src/kernel.js"></script>
+    <script src="../src/parser.js"></script>
     <script src="../src/equal.js"></script>
     <script src="../src/bool.js"></script>
     <script src="../src/goal.js"></script>
     <script src="../src/test.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/tachyons@4.12.0/css/tachyons.min.css"/>
+    <script src="https://unpkg.com/alpinejs" defer></script>
   </head>
   <body>
-    <h1>Prover</h1>
-    <article id="display">
+    <h1 class="f1 mh3">Prover</h1>
+    <article class="mh3" x-data="{ theorem: ``, ast: {} }">
+      <input x-model="theorem" @input.debounce="ast = parse(theorem)"></input>
+      <pre class="code" x-text="JSON.stringify(ast, null, 2)"></pre>
     </article>
   </body>
 </html>
