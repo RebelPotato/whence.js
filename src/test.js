@@ -3,22 +3,7 @@ function dbg(...args) {
   return args[args.length - 1];
 }
 
-// const { Arr, Bool, Tvar, vari, app, fn, EMP, REFL, ASSUME, eq } = Kernel;
-// const { prove } = Tactics;
-
-// console.log("begin");
-// const p = vari(Bool, "p");
-// const q = vari(Bool, "q");
-// const landr = BoolThms.AND(ASSUME(p), ASSUME(q));
-// console.log(landr.show());
-// console.log(toHex(landr.hash()));
-// const ltolandr = BoolThms.DISCH(p, landr);
-// console.log(ltolandr.show());
-// console.log(BoolThms.MP(ltolandr, ASSUME(p)).show());
-
-// console.log(ltolandr.free.map((x) => x.show()));
-
-const parser = mkParser({
+const MiniDefs = {
   T: {
     arity: 0,
     alias: {},
@@ -43,6 +28,14 @@ const parser = mkParser({
       ascii: "&",
     },
   },
+  "⇒": {
+    binop: true,
+    arity: 2,
+    alias: {
+      readable: "implies",
+      ascii: "=>",
+    },
+  },
   "∨": {
     binop: true,
     arity: 2,
@@ -55,7 +48,7 @@ const parser = mkParser({
     arity: 2,
     alias: {
       readable: "forall",
-      ascii: "\-/",
+      ascii: "-/",
     },
   },
   "∃": {
@@ -65,21 +58,17 @@ const parser = mkParser({
       ascii: "EE",
     },
   },
-  "⇒": {
-    binop: true,
-    arity: 2,
-    alias: {
-      readable: "implies",
-      ascii: "=>",
-    },
-  },
-}, 9);
+};
+
+const parser = mkParser(MiniDefs, 3);
 
 function parse(str) {
   const result = parser(str);
-  if(result.failed || result.rest.length > 0) {
+  if (result.failed || result.rest.length > 0) {
     console.error("parse trace: ", result.trace);
     throw new Error("parse failed");
   }
-  return result.matched;
+  return JSON.stringify(result.matched, null, 2);
+  // const term = fromJSON(result.matched, MiniDefs, {});
+  // return term.show();
 }

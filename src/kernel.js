@@ -187,7 +187,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
     if (!ptype.eq(Type) && isTerm(ptype))
       // ptype is the type of the input variable, which must be a type
       fail(
-        `Pi: type mismatch, ${ptype.show()} :: ${ptype.type.show()} should be a type`
+        `Pi: type mismatch, ${ptype.show()} : ${ptype.type.show()} should be a type`
       );
     const Tmp = vari(ptype, "T");
     const ret = body(Tmp);
@@ -196,21 +196,22 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
 
     if (inputKind.eq(Type) && outputKind.eq(Wat) && !termToType)
       fail(
-        `Pi: this kernel cannot build a function from term :: ${ptype.show()} to type :: ${ret.show()}`
+        `Pi: this kernel cannot build a function from term : ${ptype.show()} to type : ${ret.show()}`
       );
     if (inputKind.eq(Wat) && outputKind.eq(Wat) && !typeToType)
       fail(
-        `Pi: this kernel cannot build a function from type :: ${ptype.show()} to type :: ${ret.show()}`
+        `Pi: this kernel cannot build a function from type : ${ptype.show()} to type : ${ret.show()}`
       );
     if (inputKind.eq(Wat) && outputKind.eq(Type) && !typeToTerm)
       fail(
-        `Pi: this kernel cannot build a function from type :: ${ptype.show()} to term :: ${ret.show()}`
+        `Pi: this kernel cannot build a function from type : ${ptype.show()} to term : ${ret.show()}`
       );
-      
+
     return PiX(ptype, Tmp, ret, body);
   }
 
   function PiX(ptype, Tmp, ret, body) {
+    const n = Type.eq(ptype) ? "T" : "x";
     const varUsed = ret.free.includes(Tmp);
     if (!varUsed) return PiCheap(ptype, ret);
 
@@ -222,7 +223,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         other.match({
           Pi: (otherPtype, otherBody) => {
             if (!ptype.eq(otherPtype)) return false;
-            const T = vari(ptype, "T");
+            const T = vari(ptype, n);
             return body(T).eq(otherBody(T));
           },
           _: () => false,
@@ -239,19 +240,19 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         return Maybe.Just((v0) => Pi(pFn(v0), (x) => body(x).hollow(v)(v0)));
       },
       show: (env = new ShowEnv()) => {
-        const T = vari(ptype, "T");
+        const T = vari(ptype, n);
         env.get(T);
-        return `(Π${T.show(env)} :: ${ptype.show(env)}. ${body(T).show(env)})`;
+        return `(Π${T.show(env)} : ${ptype.show(env)}. ${body(T).show(env)})`;
       },
       hash: (env = new ShowEnv()) => {
-        const T = vari(ptype, "T");
+        const T = vari(ptype, n);
         env.get(T);
         return combine(sdbm("Pi"), T.hash(env), body(T).hash(env));
       },
       app: (arg) => {
         if (!ptype.eq(arg.type))
           fail(
-            `Pi: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} to ${obj.show()}`
+            `Pi: type mismatch, tried to apply ${arg.show()} : ${arg.type.show()} to ${obj.show()}`
           );
         return body(arg);
       },
@@ -262,6 +263,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
 
   // optimization: a Pi type with no free variables inside
   function PiCheap(ptype, ret) {
+    const n = Type.eq(ptype) ? "T" : "x";
     const obj = {
       cheap: true,
       match: matchOr("Pi", [ptype, () => ret], () => obj),
@@ -284,14 +286,14 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       },
       show: (env = new ShowEnv()) => `(${ptype.show(env)} → ${ret.show(env)})`,
       hash: (env = new ShowEnv()) => {
-        const T = vari(ptype, "T");
+        const T = vari(ptype, n);
         env.get(T);
         return combine(sdbm("Pi"), T.hash(env), ret.hash(env));
       },
       app: (arg) => {
         if (!ptype.eq(arg.type))
           fail(
-            `Pi: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} to ${obj.show()}`
+            `Pi: type mismatch, tried to apply ${arg.show()} : ${arg.type.show()} to ${obj.show()}`
           );
         return ret;
       },
@@ -330,9 +332,15 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
 
   // use a function as the body to avoid alpha conversions
   function fn(ptype, body) {
-    const tmpX = vari(ptype, "x");
+    const n = Type.eq(ptype) ? "T" : "x";
+    const tmpX = vari(ptype, n);
     const ret = body(tmpX).type;
-    const type = PiX(ptype, tmpX, ret, ret.hollow(tmpX).orElse(() => ret)); // naive type inference?
+    const type = PiX(
+      ptype,
+      tmpX,
+      ret,
+      ret.hollow(tmpX).orElse(() => ret)
+    );
 
     const obj = {
       match: matchOr("fn", [ptype, body], () => obj),
@@ -341,15 +349,15 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         other.match({
           fn: (otherType, otherBody) => {
             if (!ptype.eq(otherType)) return false;
-            const x = vari(ptype, "x");
+            const x = vari(ptype, n);
             return body(x).eq(otherBody(x));
           },
           _: () => false,
         }),
       show: (env = new ShowEnv()) => {
-        const x = vari(ptype, "x");
+        const x = vari(ptype, n);
         env.get(x);
-        return `(λ${x.show(env)} :: ${ptype.show(env)}. ${body(x).show(env)})`;
+        return `(λ${x.show(env)} : ${ptype.show(env)}. ${body(x).show(env)})`;
       },
       hollow: (v) => {
         const newP = ptype.hollow(v);
@@ -359,14 +367,14 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         return Maybe.Just((v0) => fn(pFn(v0), (x) => body(x).hollow(v)(v0)));
       },
       hash: (env = new ShowEnv()) => {
-        const x = vari(ptype, "x");
+        const x = vari(ptype, n);
         env.get(x);
         return combine(sdbm("fn"), x.hash(env), body(x).hash(env));
       },
       app: (arg) => {
         if (!ptype.eq(arg.type))
           fail(
-            `fn: type mismatch, tried to apply ${arg.show()} :: ${arg.type.show()} but expected ${ptype.show()}`
+            `fn: type mismatch, tried to apply ${arg.show()} : ${arg.type.show()} but expected ${ptype.show()}`
           );
         return body(arg);
       },
@@ -381,7 +389,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       Pi: () => opType.app(arg),
       _: () =>
         fail(
-          `app: type mismatch, tried to apply non-function ${op.show()} :: ${opType.show()}`
+          `app: type mismatch, tried to apply non-function ${op.show()} : ${opType.show()}`
         ),
     });
 
@@ -410,7 +418,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       type1,
       type2,
       () =>
-        `eq: type mismatch, ${lhs.show()} :: ${type1.show()} and ${rhs.show()} :: ${type2.show()} are not of equal types`
+        `eq: type mismatch, ${lhs.show()} : ${type1.show()} and ${rhs.show()} : ${type2.show()} are not of equal types`
     );
 
     const type = Bool;
@@ -443,14 +451,14 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
         t.type,
         Bool,
         () =>
-          `⊢: type mismatch, ${t.show()} :: ${t.type.show()} is not a boolean`
+          `⊢: type mismatch, ${t.show()} : ${t.type.show()} is not a boolean`
       );
     }
     eqOrThrow(
       then.type,
       Bool,
       () =>
-        `⊢: type mismatch: ${then.show()} :: ${then.type.show()} is not a boolean`
+        `⊢: type mismatch: ${then.show()} : ${then.type.show()} is not a boolean`
     );
 
     const obj = {
@@ -498,7 +506,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       b0,
       b1,
       () =>
-        `TRANS: term mismatch, ${b0.show()} :: ${b0.type.show()} and ${b1.show()} :: ${b1.type.show()} are not equal`
+        `TRANS: term mismatch, ${b0.show()} : ${b0.type.show()} and ${b1.show()} : ${b1.type.show()} are not equal`
     );
 
     const then = eq(a, c);
@@ -548,7 +556,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
       p,
       p0,
       () =>
-        `EMP: term mismatch, ${p.show()} :: ${p.type.show()} and ${p0.show()} :: ${p0.type.show()} are not equal`
+        `EMP: term mismatch, ${p.show()} : ${p.type.show()} and ${p0.show()} : ${p0.type.show()} are not equal`
     );
     return Sequent(merge(pThm.ifs, pqThm.ifs), q);
   }
@@ -661,7 +669,7 @@ function KernelGen({ termToType, typeToType, typeToTerm }) {
   function de(name, t) {
     return t.match({
       [name]: (...args) => [...args],
-      _: () => fail(`Not ${name}: ${t.show()} :: ${t.type.show()}`),
+      _: () => fail(`Not ${name}: ${t.show()} : ${t.type.show()}`),
     });
   }
 

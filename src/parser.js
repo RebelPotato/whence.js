@@ -168,25 +168,30 @@ function mkParser(Defs, tracing = 0) {
   }
 
   function term(str) {
-    return oneOf("term", [lam, pi, bin, eq, app, parens, def, vari])(str);
+    return oneOf("term", [fn, pi, bin, eq, app, parens, def, variTyped, vari])(
+      str
+    );
   }
   function eqless(str) {
-    return oneOf("eqless", [lam, pi, bin, app, parens, def, vari])(str);
+    return oneOf("eqless", [fn, pi, bin, app, parens, def, variTyped, vari])(
+      str
+    );
   }
   function binless(str) {
-    return oneOf("binless", [lam, pi, app, parens, def, vari])(str);
+    return oneOf("binless", [fn, pi, app, parens, def, variTyped, vari])(str);
   }
   function appless(str) {
-    return oneOf("appless", [lam, pi, parens, def, vari])(str);
+    return oneOf("appless", [fn, pi, parens, def, variTyped, vari])(str);
   }
-  function lam(str) {
+  // todo: combine fn and pi to add room for forall, exists, etc.
+  function fn(str) {
     return wseq(
-      "lam",
-      [regex(/λ|fn|lambda/), vari, literal(":"), term, literal("."), term],
-      ([_, v, __, ty, ___, tm]) => ({
-        op: "lam",
+      "fn",
+      [regex(/λ|fn|lambda/), variTyped, literal("."), term],
+      ([_, v, __, tm]) => ({
+        op: "fn",
         vari: v,
-        type: ty,
+        type: v.type,
         term: tm,
       })
     )(str);
@@ -216,12 +221,19 @@ function mkParser(Defs, tracing = 0) {
   function vari(str) {
     return sequence(
       "vari",
-      [not(def), regex(/[a-zA-Z\_][a-zA-Z0-9\_]*/)],
+      [not(reserved), regex(/[a-zA-Z\_][a-zA-Z0-9\_]*/)],
       ([_, x]) => ({
         op: "vari",
-        vari: x,
+        name: x,
       })
     )(str);
+  }
+  function variTyped(str) {
+    return wseq("variTyped", [vari, literal(":"), eqless], ([v, _, ty]) => ({
+      op: "vari",
+      name: v.name,
+      type: ty,
+    }))(str);
   }
   function parens(str) {
     return wseq(
@@ -233,14 +245,20 @@ function mkParser(Defs, tracing = 0) {
   function pi(str) {
     return wseq(
       "pi",
-      [regex(/Π|Pi/), vari, literal(":"), term, literal("."), term],
-      ([_, v, __, ty, ___, tm]) => ({ op: "pi", vari: v, type: ty, term: tm })
+      [regex(/Π|Pi/), variTyped, literal("."), term],
+      ([_, v, __, tm]) => ({
+        op: "pi",
+        vari: v,
+        type: v.type,
+        term: tm,
+      })
     )(str);
   }
 
-  function mkBinOp(op, alias) {
-    return wseq(op, [binless, literal(alias), binless], ([lhs, _, rhs]) => ({
-      op,
+  function mkBinOp(name, alias) {
+    return wseq(name, [binless, literal(alias), binless], ([lhs, _, rhs]) => ({
+      op: "bin",
+      name,
       lhs,
       rhs,
     }));
@@ -249,22 +267,94 @@ function mkParser(Defs, tracing = 0) {
   const binNames = [];
   const constNames = [];
   for (const c of ["Bool", "Type"]) {
-    constNames.push(literal(c, (_) => ({ op: "const", const: c })));
+    constNames.push(literal(c, (_) => ({ op: "const", name: c })));
   }
   for (const d of Object.keys(Defs)) {
     const names = [d, ...Object.values(Defs[d].alias)];
     if (Defs[d].binop)
       for (const name of names) {
         binParsers.push(mkBinOp(d, name));
-        constNames.push(literal(`(${name})`, (_) => ({ op: "const", const: d })));
+        constNames.push(
+          literal(`(${name})`, (_) => ({ op: "const", name: d }))
+        );
         binNames.push(literal(name));
       }
     else
       for (const name of names)
-        constNames.push(literal(name, (_) => ({ op: "const", const: d })));
+        constNames.push(literal(name, (_) => ({ op: "const", name: d })));
   }
   const def = oneOf("def", constNames);
   const bin = oneOf("bin", binParsers);
+  const reserved = oneOf("reserved", [regex(/λ|fn|lambda|Π|Pi/), def, oneOf("binNames", binNames)]);
 
   return theorem;
+}
+
+function fromJSON(obj, Defs, env) {
+  switch (obj.op) {
+    case "const": {
+      if (obj.name === "Bool") return Kernel.Bool;
+      if (obj.name === "Type") return Kernel.Type;
+      if (Defs[obj.name] === undefined)
+        throw Error(`const ${obj.name} not found`);
+      throw Error(`creating const ${obj.name} not implemented`);
+    }
+    case "vari": {
+      if (env[obj.name] === undefined) {
+        if (obj.type === undefined)
+          throw Error(`variable ${obj.name} not found`);
+        env[obj.name] = { type: fromJSON(obj.type, Defs, env) };
+      } else if (env[obj.name].vari !== undefined) return env[obj.name].vari;
+
+      const type = env[obj.name].type;
+      const v = Kernel.vari(type, obj.name);
+      env[obj.name].vari = v;
+      return v;
+    }
+    case "fn": {
+      if(obj.type === undefined) throw Error("fn type not found");
+      const v = fromJSON(obj.vari, Defs, env);
+      const bTerm = fromJSON(obj.term, Defs, env);
+      const body = bTerm.hollow(v).orElse(() => (_) => bTerm);
+      return Kernel.fn(v.type, body);
+    }
+    case "pi": {
+      if(obj.type === undefined) throw Error("fn type not found");
+      const v = fromJSON(obj.vari, Defs, env);
+      const bTerm = fromJSON(obj.term, Defs, env);
+      const body = bTerm.hollow(v).orElse(() => (_) => bTerm);
+      return Kernel.pi(v.type, body);
+    }
+    case "app": {
+      const isConst = obj.x.op === "const";
+      let res = fromJSON(obj.x, Defs, env);
+      for (const arg of obj.args) {
+        const aterm = fromJSON(arg, Defs, env);
+        if(isConst) res = res.app(aterm);
+        else res = Kernel.app(res, aterm);
+      }
+      return res;
+    }
+    case "eq":
+      return Kernel.eq(
+        fromJSON(obj.lhs, Defs, env),
+        fromJSON(obj.rhs, Defs, env)
+      );
+    case "bin": {
+      if (obj.name == "→") return Kernel.Arr(fromJSON(obj.lhs, Defs, env), fromJSON(obj.rhs, Defs, env));
+      if (Defs[obj.name] === undefined)
+        throw Error(`binary operation ${obj.name} not found`);
+      const bin = Defs[obj.name].term;
+      const lhs = fromJSON(obj.lhs, Defs, env);
+      const rhs = fromJSON(obj.rhs, Defs, env);
+      return bin.app(lhs).app(rhs);
+    }
+    case "theorem": {
+      throw Error(
+        "theorem not implemented. Perhaps creating theorems from JSON should be banned?"
+      );
+    }
+    default:
+      throw Error(`unknown op ${obj.op}`);
+  }
 }

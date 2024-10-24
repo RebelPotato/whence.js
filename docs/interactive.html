@@ -7,7 +7,6 @@
     <script src="../src/kernel.js"></script>
     <script src="../src/parser.js"></script>
     <script src="../src/equal.js"></script>
-    <script src="../src/bool.js"></script>
     <script src="../src/goal.js"></script>
     <script src="../src/test.js"></script>
     <link
@@ -17,11 +16,11 @@
     <script src="https://unpkg.com/alpinejs" defer></script>
   </head>
   <body>
-    <h1 class="f1 mh3">Prover</h1>
-    <article class="mh3" x-data="{ theorem: ``, ast: {} }">
+    <h1 class="f2 mh3">Prover</h1>
+    <main class="mh3" x-data="{ theorem: ``, str: '' }">
       <textarea
-        class="code"
-        style="resize: horizontal"
+        class="code w-100"
+        style="resize: none"
         x-model="theorem"
         x-data="{ 
           resize () { 
@@ -32,9 +31,11 @@
         x-init="resize()"
         @click="resize()"
         @input="resize()"
-        @input.debounce.500ms="ast = parse(theorem)"
+        @input.debounce.500ms="str = parse(theorem)"
       ></textarea>
-      <pre class="code" x-text="JSON.stringify(ast, null, 2)"></pre>
-    </article>
+      <pre class="code" x-text="str"></pre>
+      <h2 class="f4">Proof</h2>
+      <textarea></textarea>
+    </main>
   </body>
 </html>

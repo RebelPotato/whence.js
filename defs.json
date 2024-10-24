@@ -1,0 +1,246 @@
+{
+  "T": {
+    "arity": 0,
+    "alias": {},
+    "term": {
+      "op": "eq",
+      "lhs": {
+        "op": "fn",
+        "vari": {
+          "op": "vari",
+          "name": "x",
+          "type": {
+            "op": "const",
+            "name": "Bool"
+          }
+        },
+        "type": {
+          "op": "const",
+          "name": "Bool"
+        },
+        "term": {
+          "op": "vari",
+          "name": "x"
+        }
+      },
+      "rhs": {
+        "op": "fn",
+        "vari": {
+          "op": "vari",
+          "name": "x",
+          "type": {
+            "op": "const",
+            "name": "Bool"
+          }
+        },
+        "type": {
+          "op": "const",
+          "name": "Bool"
+        },
+        "term": {
+          "op": "vari",
+          "name": "x"
+        }
+      }
+    }
+  },
+  "F": {
+    "arity": 0,
+    "alias": {},
+    "term": {
+      "op": "app",
+      "x": {
+        "op": "const",
+        "name": "∀"
+      },
+      "args": [
+        {
+          "op": "fn",
+          "vari": {
+            "op": "vari",
+            "name": "x",
+            "type": {
+              "op": "const",
+              "name": "Bool"
+            }
+          },
+          "type": {
+            "op": "const",
+            "name": "Bool"
+          },
+          "term": {
+            "op": "vari",
+            "name": "x"
+          }
+        }
+      ]
+    }
+  },
+  "→": {
+    "binop": true,
+    "arity": 2,
+    "alias": {
+      "readable": "arrow",
+      "ascii": "->"
+    },
+    "term": {
+      "op": "fn",
+      "vari": {
+        "op": "vari",
+        "name": "p",
+        "type": {
+          "op": "const",
+          "name": "Bool"
+        }
+      },
+      "type": {
+        "op": "const",
+        "name": "Bool"
+      },
+      "term": {
+        "op": "fn",
+        "vari": {
+          "op": "vari",
+          "name": "q",
+          "type": {
+            "op": "const",
+            "name": "Bool"
+          }
+        },
+        "type": {
+          "op": "const",
+          "name": "Bool"
+        },
+        "term": {
+          "op": "eq",
+          "lhs": {
+            "op": "bin",
+            "name": "∧",
+            "lhs": {
+              "op": "vari",
+              "name": "p"
+            },
+            "rhs": {
+              "op": "vari",
+              "name": "q"
+            }
+          },
+          "rhs": {
+            "op": "vari",
+            "name": "p"
+          }
+        }
+      }
+    }
+  },
+  "∧": {
+    "binop": true,
+    "arity": 2,
+    "alias": {
+      "readable": "and",
+      "ascii": "&"
+    }
+  },
+  "⇒": {
+    "binop": true,
+    "arity": 2,
+    "alias": {
+      "readable": "implies",
+      "ascii": "=>"
+    }
+  },
+  "∨": {
+    "binop": true,
+    "arity": 2,
+    "alias": {
+      "readable": "or",
+      "ascii": "||"
+    }
+  },
+  "∀": {
+    "arity": 2,
+    "alias": {
+      "readable": "forall",
+      "ascii": "-/"
+    },
+    "term": {
+      "op": "fn",
+      "vari": {
+        "op": "vari",
+        "name": "A",
+        "type": {
+          "op": "const",
+          "name": "Type"
+        }
+      },
+      "type": {
+        "op": "const",
+        "name": "Type"
+      },
+      "term": {
+        "op": "fn",
+        "vari": {
+          "op": "vari",
+          "name": "p",
+          "type": {
+            "op": "bin",
+            "name": "→",
+            "lhs": {
+              "op": "vari",
+              "name": "A"
+            },
+            "rhs": {
+              "op": "const",
+              "name": "Bool"
+            }
+          }
+        },
+        "type": {
+          "op": "bin",
+          "name": "→",
+          "lhs": {
+            "op": "vari",
+            "name": "A"
+          },
+          "rhs": {
+            "op": "const",
+            "name": "Bool"
+          }
+        },
+        "term": {
+          "op": "eq",
+          "lhs": {
+            "op": "vari",
+            "name": "p"
+          },
+          "rhs": {
+            "op": "fn",
+            "vari": {
+              "op": "vari",
+              "name": "_",
+              "type": {
+                "op": "vari",
+                "name": "A"
+              }
+            },
+            "type": {
+              "op": "vari",
+              "name": "A"
+            },
+            "term": {
+              "op": "const",
+              "name": "T"
+            }
+          }
+        }
+      }
+    }
+  },
+  "∃": {
+    "arity": 2,
+    "alias": {
+      "readable": "exists",
+      "ascii": "EE"
+    }
+  }
+}

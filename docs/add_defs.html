@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tests</title>
+    <script src="../src/kernel.js"></script>
+    <script src="../src/parser.js"></script>
+    <script src="../src/equal.js"></script>
+    <script src="../src/goal.js"></script>
+    <script src="../src/test.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/tachyons@4.12.0/css/tachyons.min.css"
+    />
+    <script src="https://unpkg.com/alpinejs" defer></script>
+  </head>
+  <body>
+    <h1 class="f2 mh3">Definition Builder</h1>
+    <main class="mh3" x-data="{ theorem: ``, str: '' }">
+      <div class="fl w-50">
+        <button>Add Definition</button>
+        <ul>
+          <li>One</li>
+        </ul>
+      </div>
+      <div class="fl w-50">
+        <textarea
+          class="code w-100"
+          style="resize: none"
+          x-model="theorem"
+          x-data="{ 
+            resize () { 
+              $el.style.height = '0px'; 
+              $el.style.height = ($el.scrollHeight + 5) + 'px';
+            }
+          }"
+          x-init="resize()"
+          @click="resize()"
+          @input="resize()"
+          @input.debounce.500ms="str = parse(theorem)"
+        ></textarea>
+        <pre class="code" x-text="str"></pre>
+        <h2 class="f4">Proof</h2>
+        <textarea></textarea></div>
+    </main>
+  </body>
+</html>
